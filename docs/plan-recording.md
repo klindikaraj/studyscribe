@@ -224,6 +224,16 @@ The CLI always prints the path in use.
 - DRM-protected content might be captured as silence (unlikely for course platforms).
 - That NTFS mtime after a kill matches the last write (used for `ended_at` and the ±1 s check).
 
+## Findings so far
+
+- Capture piece (2026-10-28), Realtek loopback at 48 kHz stereo while audio was playing: about
+  100 callbacks per second (10 ms packets), longest gap between packets 12-13 ms, no status
+  flags. Audio written matched wall time (5.70 s for 5.70 s).
+- Killing the parent process (TerminateProcess): the capture child noticed within 0.2 s,
+  stopped cleanly and left a WAV with a consistent header.
+- Still open: behaviour with nothing playing, behaviour when the recorded device vanishes,
+  Ctrl+C in a real console.
+
 ## Tests
 
 - Unit (pytest, no audio hardware): downmix/resample (length, 1 kHz FFT peak preserved,

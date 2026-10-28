@@ -9,6 +9,9 @@ from pathlib import Path
 APP_DIR_NAME = "StudyScribe"
 DATA_DIR_ENV = "STUDYSCRIBE_DATA_DIR"
 
+# Internal audio format: PCM int16, mono, 16 kHz (the native input format of Whisper).
+SAMPLE_RATE = 16_000
+
 
 def default_data_dir(environ: Mapping[str, str] | None = None) -> Path:
     """%LOCALAPPDATA%\\StudyScribe, independent of the working directory."""

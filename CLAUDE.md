@@ -26,7 +26,7 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1, setup done.
+Current state: step 1, capture piece done (next: segments and manifest).
 
 ## Architecture principles
 
@@ -67,14 +67,22 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
 
 ```
 src/studyscribe/
-  cli.py        command-line entry point (`studyscribe`, `python -m studyscribe`)
-  config.py     data directory resolution and shared settings
-tests/          pytest, no audio hardware required
+  cli.py              command-line entry point (`studyscribe`, `python -m studyscribe`)
+  config.py           data directory resolution and shared settings
+  recording.py        RecorderHandle: parent side of the capture process (start/events/stop)
+  audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
+  audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop, capture_main
+  system/power.py     keep_system_awake (SetThreadExecutionState)
+tests/                pytest, no audio hardware required; tests/fakes.py holds the fakes
+scripts/capture_probe.py   records the loopback to one WAV and prints packet/stream stats
 ```
 
-Planned for step 1: `recording.py`, `recovery.py`, `db/` (connection, migrations, repo),
-`audio/` (dsp, timeline, wav, segments, devices, capture), `system/` (power, locks),
+Still planned for step 1: `recovery.py`, `db/` (connection, migrations, repo),
+`audio/` (timeline, wav, segments, devices), `system/locks.py`,
 `scripts/manual_recording_test.py`, `docs/manual-test-recording.md`.
+
+Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
+top-level classes/functions or `functools.partial` of them, never lambdas.
 
 ## Data directory
 
@@ -93,6 +101,7 @@ py -3.12 -m venv .venv                          # create the venv
 .venv\Scripts\python -m pip install -e ".[dev]" # install (ask first)
 .venv\Scripts\python -m pytest                  # run tests
 .venv\Scripts\studyscribe --help                # CLI
+.venv\Scripts\python scripts\capture_probe.py --seconds 60   # real-hardware capture probe
 ```
 
 ## Working rules
