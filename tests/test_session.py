@@ -97,6 +97,7 @@ def test_new_session_without_course(db, data_dir: Path) -> None:
     [
         ("requested", 100, "recorded"),
         ("requested", 0, "recorded"),
+        ("silence_limit", 100, "recorded"),
         ("parent_exited", 100, "interrupted"),
         ("error", 100, "interrupted"),
         ("error", 0, "failed"),

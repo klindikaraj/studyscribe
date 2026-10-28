@@ -33,7 +33,7 @@ def new_session(
 
 
 def final_status(reason: str, frames: int) -> str:
-    if reason == "requested":
+    if reason in ("requested", "silence_limit"):
         return "recorded"
     if reason == "error" and frames == 0:
         return "failed"

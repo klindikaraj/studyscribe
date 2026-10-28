@@ -49,19 +49,33 @@ def run(start: float, end: float, packet_s: float = 0.01) -> list:
     return [packet(start + k * packet_s, packet_s) for k in range(n)]
 
 
-def make(rate: int = RATE, channels: int = 1):
-    out = Out()
-    aligner = TimelineAligner(0.0, out)
+class Tally:
+    """Counts what the aligner writes without keeping it (for hours of timeline)."""
+
+    def __init__(self) -> None:
+        self.frames = 0
+        self.audio_starts: list[int] = []
+
+    def __call__(self, pcm: np.ndarray, gap: bool) -> None:
+        if pcm.any():
+            self.audio_starts.append(self.frames)
+        self.frames += len(pcm)
+
+
+def make(rate: int = RATE, channels: int = 1, out=None, **options):
+    out = out if out is not None else Out()
+    aligner = TimelineAligner(0.0, out, **options)
     aligner.start_input(rate, channels)
     return aligner, out
 
 
-def drive(aligner: TimelineAligner, packets: list, start: float, end: float, on_tick=None):
-    """Deliver `packets` like the capture loop: every TICK, add() what arrived, then idle()."""
+def drive(aligner: TimelineAligner, packets: list, start: float, end: float, on_tick=None,
+          tick: float = TICK):
+    """Deliver `packets` like the capture loop: every tick, add() what arrived, then idle()."""
     pending = sorted(packets, key=lambda p: p[0])
     i = 0
-    for k in range(1, round((end - start) / TICK) + 1):
-        now = start + k * TICK
+    for k in range(1, round((end - start) / tick) + 1):
+        now = start + k * tick
         batch = []
         while i < len(pending) and pending[i][0] <= now + 1e-9:
             batch.append(pending[i])
@@ -286,3 +300,86 @@ def test_ten_minutes_with_random_pauses_stays_within_150_ms() -> None:
     errors = placed - np.array(truth)
     assert np.max(np.abs(errors)) <= 0.15
     assert out.frames == round(end * RATE)
+
+
+# --- silence limit (auto-stop) -----------------------------------------------------------------
+#
+# Ticks of 1 s during long pauses: idle() does not depend on the tick length.
+
+LIMIT = 30 * 60
+
+
+def test_long_pause_stops_at_the_limit() -> None:
+    aligner, out = make(out=Tally())
+    drive(aligner, run(0.0, 10.0), 0.0, 10.0)
+    reached_at = []
+
+    def check(now: float) -> None:
+        if aligner.limit_reached and not reached_at:
+            reached_at.append(now)
+
+    drive(aligner, [], 10.0, 10.0 + LIMIT + 5, on_tick=check, tick=1.0)
+    assert reached_at == [pytest.approx(10.0 + LIMIT, abs=1.0)]
+    aligner.finish(10.0 + LIMIT + 5)
+    # The timeline ends exactly at last sound + limit, not at the stop time.
+    assert aligner.last_sound == pytest.approx(10.0)
+    assert out.frames == round((aligner.last_sound + LIMIT) * RATE)
+
+
+def test_29_minute_pause_does_not_stop() -> None:
+    aligner, out = make(out=Tally())
+    resume = 10.0 + 29 * 60
+    drive(aligner, run(0.0, 10.0), 0.0, 10.0)
+    drive(aligner, [], 10.0, resume, tick=1.0)
+    drive(aligner, run(resume, resume + 10.0), resume, resume + 10.0)
+    assert not aligner.limit_reached
+    assert out.audio_starts[1000] == round(resume * RATE)  # resumed audio exactly on time
+    aligner.finish(resume + 10.0)
+    assert out.frames == round((resume + 10.0) * RATE)
+
+
+def test_single_eight_hour_jump_fills_only_up_to_the_limit() -> None:
+    # The PC slept for 8 hours: the first tick after waking sees the clock 8 h later.
+    aligner, out = make(out=Tally())
+    drive(aligner, run(0.0, 10.0), 0.0, 10.0)
+    wake = 10.0 + 8 * 3600
+    aligner.idle(wake)
+    assert aligner.limit_reached
+    limit_frames = round((aligner.last_sound + LIMIT) * RATE)
+    assert out.frames == limit_frames
+    # Whatever arrives after waking is not part of the session any more.
+    aligner.add(run(wake, wake + 1.0))
+    aligner.finish(wake + 1.0)
+    assert out.frames == limit_frames
+    assert len(out.audio_starts) == 1000
+
+
+def test_jump_seen_by_a_packet_first_fills_only_up_to_the_limit() -> None:
+    # Same, but after waking a packet arrives before the next idle() call.
+    aligner, out = make(out=Tally())
+    drive(aligner, run(0.0, 10.0), 0.0, 10.0)
+    wake = 10.0 + 8 * 3600
+    aligner.add(run(wake, wake + 0.05))
+    assert aligner.limit_reached
+    assert out.frames == round((aligner.last_sound + LIMIT) * RATE)
+    assert len(out.audio_starts) == 1000
+
+
+def test_digital_silence_does_not_count_as_sound() -> None:
+    # A player that keeps sending zeros (or noise below -80 dBFS) cannot keep a forgotten
+    # recording alive. Limit of 5 s to keep the test short.
+    aligner, out = make(silence_limit_s=5.0)
+    zeros = [packet(1.0 + k * 0.01, value=0.0) for k in range(900)]
+    hiss = [packet(10.0 + k * 0.01, value=1e-5) for k in range(100)]
+    drive(aligner, run(0.0, 1.0) + zeros + hiss, 0.0, 11.0)
+    assert aligner.limit_reached
+    assert aligner.last_sound == pytest.approx(1.0)
+    aligner.finish(11.0)
+    assert out.frames <= round(6.0 * RATE) + 800  # at most one tick of zeros past the limit
+
+
+def test_no_limit() -> None:
+    aligner, out = make(out=Tally(), silence_limit_s=None)
+    aligner.idle(8 * 3600.0)
+    assert not aligner.limit_reached
+    assert out.frames == round((8 * 3600.0 - 0.1) * RATE)

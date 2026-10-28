@@ -27,7 +27,13 @@ from pathlib import Path
 import numpy as np
 
 from studyscribe.audio.capture import CaptureConfig
-from studyscribe.config import SAMPLE_RATE, db_path, resolve_data_dir, session_dir
+from studyscribe.config import (
+    SAMPLE_RATE,
+    SILENCE_LIMIT_S,
+    db_path,
+    resolve_data_dir,
+    session_dir,
+)
 from studyscribe.db import repo
 from studyscribe.db.connection import open_database
 from studyscribe.recording import RecorderHandle
@@ -122,6 +128,13 @@ def main() -> int:
     parser.add_argument("--out", help="output WAV path")
     parser.add_argument("--data-dir", help="data directory (default output path, sessions)")
     parser.add_argument("--session", metavar="TITLE", help="record into a real session")
+    parser.add_argument(
+        "--silence-limit",
+        type=float,
+        default=SILENCE_LIMIT_S,
+        metavar="SECONDS",
+        help=f"stop after this long without sound (default {SILENCE_LIMIT_S:g})",
+    )
     args = parser.parse_args()
 
     data_dir = resolve_data_dir(args.data_dir)
@@ -142,7 +155,9 @@ def main() -> int:
         print(f"Output: {out}")
         sink_factory = functools.partial(WaveFileSink, str(out))
 
-    handle = RecorderHandle(CaptureConfig(sink_factory=sink_factory))
+    handle = RecorderHandle(
+        CaptureConfig(sink_factory=sink_factory, silence_limit_s=args.silence_limit)
+    )
     handle.start()
     print(f"Parent pid {os.getpid()}, capture pid {handle.pid}. Ctrl+C to stop.")
     show = Printer()

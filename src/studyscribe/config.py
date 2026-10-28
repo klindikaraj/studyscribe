@@ -23,6 +23,13 @@ FILL_THRESHOLD_S = 0.1
 IDLE_FILL_AFTER_S = 0.5
 IDLE_FILL_MARGIN_S = 0.1
 
+# Auto-stop: after this long without sound the recording ends (status 'recorded', with a
+# warning), and a single clock jump (e.g. waking from sleep) is filled only up to the limit.
+# "Sound" is any packet peaking above SOUND_FLOOR_DB: digital silence does not count, so a
+# player or app that keeps sending zeros cannot keep a forgotten recording alive.
+SILENCE_LIMIT_S = 30 * 60
+SOUND_FLOOR_DB = -80.0
+
 # Device changes: how often the default output is checked, and how often a failed reopen of
 # the stream is retried.
 DEVICE_POLL_S = 0.5

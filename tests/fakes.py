@@ -195,9 +195,15 @@ class ClockedSource:
             arrival = round(start + self.packet_s, 9)
             if arrival > end:
                 return packets
-            self._count += 1
-            if not any(a <= start < b for a, b in self.silent):
+            window = next(((a, b) for a, b in self.silent if a <= start < b), None)
+            if window is None:
+                self._count += 1
                 packets.append((arrival, self._block, 0))
+            elif window[1] == math.inf:
+                return packets
+            else:  # skip the whole window at once (it may last hours)
+                after = math.ceil(round((window[1] - self._origin) / self.packet_s, 6))
+                self._count = max(self._count + 1, after)
 
     def is_active(self) -> bool:
         return self.opened and not self.close_calls and self.clock() < self.dies_at

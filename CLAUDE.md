@@ -58,6 +58,9 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
   The hole, from `max(last packet, detection − 0.5 s)` to the reopen, is filled with silence
   and counted in `gap_ms` (milliseconds of the segment that are synthetic because of a device
   switch). The first stream must open; after that a lost device never stops the recording.
+- Auto-stop after 30 min without sound (packets above -80 dBFS; digital silence does not count),
+  configurable: session `recorded` with a warning. The timeline is never filled past last
+  sound + limit, so a clock jump after a system sleep cannot write hours of silence.
 - Anti-standby: `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` in the capture
   thread, released in `finally`.
 - Recovery (at start of `record`/`sessions`, or `recover`): sessions in `recording` whose lock

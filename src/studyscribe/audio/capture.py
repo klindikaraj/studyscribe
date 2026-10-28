@@ -22,7 +22,7 @@ import numpy as np
 from studyscribe.audio.devices import DefaultOutputMonitor
 from studyscribe.audio.dsp import LevelMeter
 from studyscribe.audio.timeline import Packet, TimelineAligner
-from studyscribe.config import DEVICE_POLL_S, REOPEN_RETRY_S, SAMPLE_RATE
+from studyscribe.config import DEVICE_POLL_S, REOPEN_RETRY_S, SAMPLE_RATE, SILENCE_LIMIT_S
 from studyscribe.system.power import keep_system_awake
 
 Emit = Callable[..., None]
@@ -64,7 +64,10 @@ class Sink(Protocol):
         ...
 
     def close(self, reason: str) -> None:
-        """Always called, even if start() was not. reason: requested, parent_exited, error."""
+        """Always called, even if start() was not.
+
+        reason: requested, silence_limit (auto-stop), parent_exited, error.
+        """
         ...
 
 
@@ -161,6 +164,8 @@ class CaptureConfig:
     stats_interval_s: float = 1.0
     device_poll_s: float = DEVICE_POLL_S
     reopen_retry_s: float = REOPEN_RETRY_S
+    # Stop by itself after this long without sound; None: never.
+    silence_limit_s: float | None = SILENCE_LIMIT_S
 
 
 class _PacketStats:
@@ -239,6 +244,10 @@ def _next_deadline(deadline: float, interval: float, now: float) -> float:
     return deadline if deadline > now else now + interval
 
 
+def _duration(seconds: float) -> str:
+    return f"{seconds:.0f} s" if seconds < 120 else f"{seconds / 60:.0f} min"
+
+
 def _close_source(source: AudioSource, emit: Emit) -> None:
     for problem in source.close():
         emit("warning", message=f"closing the audio stream: {problem}")
@@ -264,10 +273,11 @@ def run_capture(
 ) -> str:
     """Capture until `should_stop()` returns a reason, then return that reason.
 
-    The first stream must open, or the error propagates. After that a lost device never stops
-    the recording: the stream is reopened (retrying every `reopen_retry_s`) and the hole is
-    filled with silence counted as gap. The source, the default output watch and the sink are
-    always closed, errors included.
+    Also returns "silence_limit" if nothing was heard for `silence_limit_s`. The first stream
+    must open, or the error propagates. After that a lost device never stops the recording:
+    the stream is reopened (retrying every `reopen_retry_s`) and the hole is filled with
+    silence counted as gap. The source, the default output watch and the sink are always
+    closed, errors included.
     """
     sink = config.sink_factory()
     watch: _DefaultOutputWatch | None = None
@@ -293,7 +303,7 @@ def run_capture(
             sink.write(pcm, gap=gap)
             meter.add(pcm)
 
-        timeline = TimelineAligner(t0, write)
+        timeline = TimelineAligner(t0, write, silence_limit_s=config.silence_limit_s)
         timeline.start_input(source.rate, source.channels)
         stats = _PacketStats(t0)
         next_level = t0 + config.level_interval_s
@@ -303,6 +313,7 @@ def run_capture(
         lost_at = t0  # start of the current device gap
         failures = 0
         last_failure = ""
+        previous_tick = t0
 
         def take(packets: list[Packet]) -> None:
             for arrival, _, status in packets:
@@ -313,6 +324,8 @@ def run_capture(
             if source is not None:
                 take(source.drain())
             now = clock()
+            clock_jump = now - previous_tick
+            previous_tick = now
 
             default_changed = False
             if now >= next_poll:
@@ -366,7 +379,20 @@ def run_capture(
                     source, source_id = new_source, new_id
                     failures, last_failure = 0, ""
 
+            # Closing and reopening a stream takes tens of milliseconds, and its leftover
+            # packets were written meanwhile: read the clock again for what follows.
+            now = clock()
             timeline.idle(now)
+            if timeline.limit_reached:
+                stop_reason = "silence_limit"
+                message = (
+                    f"no sound for {_duration(config.silence_limit_s or 0)} (last at "
+                    f"t={timeline.last_sound - t0:.1f} s): recording stopped automatically"
+                )
+                if clock_jump > 60:
+                    message += f"; the clock jumped {_duration(clock_jump)} at once (sleep?)"
+                emit("warning", message=message)
+                break
             if now >= next_level:
                 rms_db, peak_db = meter.take()
                 emit("level", rms_db=round(rms_db, 1), peak_db=round(peak_db, 1))

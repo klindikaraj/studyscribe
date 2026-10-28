@@ -270,6 +270,52 @@ def test_default_output_that_cannot_start_is_a_warning() -> None:
     assert len(sink.samples) == 16_000
 
 
+# --- silence limit -------------------------------------------------------------------------
+
+
+def run_with_limit(clock: FakeClock, source, should_stop, limit_s: float):
+    sink = ListSink()
+    emit = Recorder()
+    config = CaptureConfig(
+        sink_factory=lambda: sink,
+        source_factory=lambda: source,
+        default_output_factory=lambda: ScriptedDefaultOutput(clock=clock),
+        silence_limit_s=limit_s,
+    )
+    reason = run_capture(config, should_stop, emit, clock=clock, sleep=clock.sleep)
+    return reason, sink, emit
+
+
+def test_recording_stops_by_itself_after_the_silence_limit() -> None:
+    clock = FakeClock()
+    source = ClockedSource(clock, silent=[(1001.0, math.inf)])
+    reason, sink, emit = run_with_limit(clock, source, stop_after(1000), limit_s=5.0)
+    assert reason == "silence_limit"
+    assert sink.close_reason == "silence_limit"
+    assert len(sink.samples) == 6 * 16_000  # last sound at 1.0 s + 5 s
+    [warning] = emit.of_type("warning")
+    assert "no sound for" in warning["message"] and "jumped" not in warning["message"]
+    assert emit.of_type("stopped")[-1]["reason"] == "silence_limit"
+    assert source.close_calls >= 1
+
+
+def test_clock_jump_after_sleep_fills_only_up_to_the_limit() -> None:
+    clock = FakeClock()
+    source = ClockedSource(clock, silent=[(1002.0, math.inf)])
+    calls = itertools.count()
+
+    def should_stop():
+        if next(calls) == 60:  # at 3.0 s the PC sleeps for 8 hours
+            clock.sleep(8 * 3600)
+        return None
+
+    reason, sink, emit = run_with_limit(clock, source, should_stop, limit_s=60.0)
+    assert reason == "silence_limit"
+    assert len(sink.samples) == (2 + 60) * 16_000  # last sound at 2.0 s + 60 s, not 8 h
+    [warning] = emit.of_type("warning")
+    assert "jumped 480 min" in warning["message"]
+
+
 # --- separate process --------------------------------------------------------------------
 
 

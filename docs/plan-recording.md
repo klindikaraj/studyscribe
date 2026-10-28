@@ -106,6 +106,21 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
   If it runs slower, about 100 ms of silence is inserted each time the deficit crosses the
   threshold (once every ~55 min at 30 ppm).
 
+## Silence limit (auto-stop)
+
+- After 30 minutes in a row without sound (`SILENCE_LIMIT_S`, configurable through
+  `CaptureConfig.silence_limit_s`; `None` disables it) the recording stops by itself: reason
+  `silence_limit`, session `recorded`, plus a warning saying when the last sound was.
+- "Sound" = a packet peaking above -80 dBFS (`SOUND_FLOOR_DB`). Packets of digital silence do
+  not count: players keep sending zeros after a pause (10 s seen in the tests) and some apps
+  never stop, which would keep a forgotten recording alive. The counter starts at t0, so a
+  recording where nothing ever plays stops too.
+- The timeline is never filled past `last sound + limit`. A single clock jump bigger than the
+  time left (e.g. waking from sleep, if `perf_counter` counted the sleep) is filled only up to
+  the limit, and the recording stops; packets arriving after that are not part of the session.
+  The warning mentions the jump when the clock moved more than a minute between two ticks.
+- Agreed with the user (2026-10-29), added to piece 4 rather than to recovery.
+
 ## Segments
 
 - Rotation by sample count: exactly 960,000 samples per segment, so segment N always starts
@@ -266,6 +281,12 @@ The CLI always prints the path in use.
   pause. Not seen so far (longest gap between packets during playback: 12-19 ms).
 - `gap_ms` can undercount by up to ~0.5 s per switch if a loss is noticed more than 0.5 s after
   the last packet: silence already written as ordinary silence cannot be relabelled.
+- On a switch of the default output (e.g. replugging), audio that Windows already routes to the
+  new device before the poll notices (up to 0.5 s) is not captured. If the old device keeps
+  delivering packets meanwhile, that time is recorded as the old device's (silent) audio, not
+  as gap. In the user's test the old device still had sound until the switch was noticed.
+- The capture level follows the device volume (loopback is taken after it): the same lecture
+  measured about -20 dBFS on the Realtek output and about -40 dBFS on the monitor.
 
 ## Unverified assumptions (check during capture work)
 
@@ -279,9 +300,8 @@ The CLI always prints the path in use.
 - That NTFS mtime after a kill matches the last write (used for `ended_at` and the ±1 s check).
 - That the eMultimedia default (what PortAudio opens) always equals the default shown in the
   sound settings. Windows sets the console and multimedia roles together, so it should.
-- What `time.perf_counter` does across a system sleep. If it keeps counting, a recording that
-  survives a manual sleep gets the whole sleep as silence on wake (8 h would be ~900 MB of
-  silent segments). A cap on single fills may be needed; to decide.
+- What `time.perf_counter` does across a system sleep. If it keeps counting, the jump on wake
+  is filled with silence, but only up to the silence limit (see above), so never hours of it.
 
 ## Findings so far
 
@@ -311,6 +331,31 @@ The CLI always prints the path in use.
 - Silence filling piece: `DefaultOutputMonitor` returns the Realtek endpoint ID on the test PC.
   A 12 s session with nothing playing produced one 11.77 s segment of silence for 11.77 s of
   wall time (before silence filling the same test produced no segment at all).
+- Silence filling piece, 150 s test by the user (2026-10-29):
+  - Play pressed ~5 s after the start: `missing` stayed at 0.10 s while waiting, then 0.02 s.
+  - Pause at ~41 s, resume at ~60 s: the player sent ~10 s of zeros, then the timeline was
+    filled (silence +9.7 s) with `missing` at 0.10 s.
+  - Headphones unplugged at ~91 s: `stream stopped`, reopened on the monitor, gap 174 ms,
+    first attempt. The player did not pause.
+  - Replugged at ~111 s: `default output changed`, reopened on Realtek, gap 250 ms, first
+    attempt. Reopening the just-returned Realtek endpoint took longer than the 25-65 ms seen
+    with stable devices.
+  - Ctrl+C: exit 0, `recorded`, `missing` 0.00, manifest total 150.232 s = wall time, manifest
+    gap 414 ms (both switches fell in segment 2).
+  - The stats line of the replug tick showed `missing` -0.02 s: it used a clock reading taken
+    before the old stream was closed, while the packets drained after the close and the
+    resampler's tail were already written. Cosmetic; the loop now reads the clock again after
+    device handling.
+- Silence limit: with `--silence-limit 3` and nothing playing, the probe stopped by itself
+  after 3.0 s of timeline, status `recorded`.
+
+## Carried over to step 2 (transcription)
+
+- Normalise the level before transcription (no code in step 1). The loopback records after the
+  device volume, so the same lecture can be ~20 dB quieter on one output than on another (seen
+  between the Realtek output and the monitor), and the user's volume setting changes it too.
+  Store the audio as captured; normalise only the copy fed to the ASR (e.g. gain to a target
+  loudness per segment or per window, never clipping).
 
 ## Tests
 

@@ -11,7 +11,9 @@ into a timeline where sample n is n / 16000 s after t0:
   so files keep growing during pauses without writing into the future;
 - the first packet after silence (start of the recording, a pause, a device switch) is placed
   exactly where the clock says;
-- real audio is never dropped.
+- real audio is never dropped;
+- after SILENCE_LIMIT_S without sound, `limit_reached` turns True and the timeline is never
+  filled past last sound + limit, even across a single huge clock jump (waking from sleep).
 
 Silence written inside a device gap (open_gap / close_gap) is marked as synthetic. Pure: all
 times are passed in, so tests drive it with made-up clocks and packets.
@@ -35,6 +37,8 @@ from studyscribe.config import (
     IDLE_FILL_AFTER_S,
     IDLE_FILL_MARGIN_S,
     SAMPLE_RATE,
+    SILENCE_LIMIT_S,
+    SOUND_FLOOR_DB,
 )
 
 # (time.perf_counter() at arrival, interleaved float32 frames, PortAudio status flags)
@@ -68,6 +72,7 @@ class TimelineAligner:
 
     Call start_input() when a stream opens, add() with the packets of each drain, idle() on
     every loop tick, end_input() when the stream closes and finish() when the recording stops.
+    Once `limit_reached` is True the recording should stop: add() ignores further packets.
     """
 
     def __init__(
@@ -78,16 +83,24 @@ class TimelineAligner:
         fill_threshold_s: float = FILL_THRESHOLD_S,
         idle_fill_after_s: float = IDLE_FILL_AFTER_S,
         idle_fill_margin_s: float = IDLE_FILL_MARGIN_S,
+        silence_limit_s: float | None = SILENCE_LIMIT_S,
+        sound_floor_db: float = SOUND_FLOOR_DB,
     ) -> None:
         self.t0 = t0
         self.frames = 0  # samples on the timeline so far
         self.silence_frames = 0  # of which inserted silence
         self.gap_frames = 0  # of which inside a device gap
+        # Arrival of the last packet with sound; t0, so a recording where nothing ever plays
+        # stops too.
+        self.last_sound = t0
+        self.limit_reached = False
         self._write = write
         self._rate = sample_rate
         self._threshold = round(fill_threshold_s * sample_rate)
         self._idle_after = idle_fill_after_s
         self._margin = idle_fill_margin_s
+        self._limit = silence_limit_s  # None: no limit
+        self._sound_floor = 10.0 ** (sound_floor_db / 20.0)
         # t0, so that a recording that starts in silence is filled from its first second.
         self._last_packet = t0
         self._input: tuple[int, int] | None = None  # (rate, channels) of the open stream
@@ -111,7 +124,7 @@ class TimelineAligner:
 
     def add(self, packets: Sequence[Packet]) -> None:
         """Append the packets of one drain, inserting silence first where the clock says so."""
-        if not packets:
+        if not packets or self.limit_reached:
             return
         if self._input is None or self._resampler is None:
             raise RuntimeError("add() called without an open input")
@@ -121,19 +134,24 @@ class TimelineAligner:
             if behind > (0 if self._new_run else self._threshold):
                 self._flush()
                 self._fill_to(self._frame_at(start))
-            mono = downmix_to_mono(frames_from_bytes(data, channels))
-            self._emit(float_to_int16(self._resampler.process(mono)))
+                if self.limit_reached:
+                    return  # the recording ends at the limit; later packets are not part of it
+            frames = frames_from_bytes(data, channels)
+            if frames.size and float(np.max(np.abs(frames))) > self._sound_floor:
+                self.last_sound = max(self.last_sound, arrival)
+            self._emit(float_to_int16(self._resampler.process(downmix_to_mono(frames))))
             self._pending = True
             self._new_run = False
             self._last_packet = max(self._last_packet, arrival)
+        self._check_limit(self._last_packet)  # packets of digital silence keep arriving
 
     def idle(self, now: float) -> None:
         """Call on every loop tick, after add(): fills the timeline while no packets arrive."""
-        if now - self._last_packet < self._idle_after:
+        if self.limit_reached or now - self._last_packet < self._idle_after:
             return
         self._flush()
         self._new_run = True
-        self._fill_to(self._frame_at(now - self._margin))
+        self._fill_to(self._frame_at(now - self._margin))  # stops at the silence limit
 
     def open_gap(self, at: float) -> None:
         """From `at` on, inserted silence is synthetic: the device was lost."""
@@ -145,12 +163,17 @@ class TimelineAligner:
             self._gaps[-1][1] = self._frame_at(at)
 
     def finish(self, end: float) -> None:
-        """The recording stopped at `end`: write the resampler's tail, then fill up to `end`."""
+        """The recording stopped at `end`: write the resampler's tail, then fill up to `end`
+        (or up to the silence limit, if that comes first)."""
         self.end_input()
         self._fill_to(self._frame_at(end))
 
     def _frame_at(self, t: float) -> int:
         return round((t - self.t0) * self._rate)
+
+    def _check_limit(self, t: float) -> None:
+        if self._limit is not None and t - self.last_sound >= self._limit:
+            self.limit_reached = True
 
     def _emit(self, pcm: np.ndarray) -> None:
         if pcm.size:
@@ -164,6 +187,11 @@ class TimelineAligner:
         self._pending = False
 
     def _fill_to(self, target: int) -> None:
+        if self._limit is not None:
+            limit = self._frame_at(self.last_sound + self._limit)
+            if target >= limit:
+                target = limit
+                self.limit_reached = True
         # At most one second per write, so even a long jump of the clock never needs one
         # huge buffer.
         while self.frames < target:
