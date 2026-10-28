@@ -51,6 +51,13 @@ class RecorderHandle:
         received.extend(self._drain())
         return received
 
+    def kill(self) -> int | None:
+        """Kill the capture process with no chance to clean up, as a crash would (tests and
+        manual checks of recovery). Returns its exit code."""
+        self._process.kill()
+        self._process.join()
+        return self._process.exitcode
+
     def stop(self, timeout: float = 10.0) -> int | None:
         """Ask the capture process to finish, wait for it and return its exit code.
 

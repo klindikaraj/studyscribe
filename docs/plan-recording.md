@@ -15,7 +15,7 @@ kill loses at most a few seconds and the timeline stays aligned.
 2. Capture: loopback in callback mode, downmix + resample, separate process, anti-standby (done)
 3. Segments and manifest: 60 s WAV segments, SQLite schema v1 and migrations (done)
 4. Silence filling and device changes (done)
-5. Recovery
+5. Recovery (done)
 6. CLI: `record`, `sessions`, `recover`
 7. Tests: remaining unit tests, manual checklist and verification script
 
@@ -54,8 +54,9 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
 
 - The parent (CLI) creates the session row and starts the capture process with
   `multiprocessing` (spawn context).
-- The child owns everything else: session lock, anti-standby, stream, WAV writing,
-  `audio_segments` rows, final session status.
+- The child owns everything else: its session lock, anti-standby, stream, WAV writing,
+  `audio_segments` rows, final session status. The parent holds its own session lock (see
+  Recovery) from before the session row exists until the child has exited.
 - Parent → child: a `multiprocessing.Event` to stop. Child → parent: a bounded
   `multiprocessing.Queue` of events (levels, stats, device changes, errors), written with
   `put_nowait`; if the parent does not read, events are dropped and capture never blocks.
@@ -246,16 +247,34 @@ Agreed deviations from the original design notes:
   not been used yet.
 - Session IDs are readable and sortable: `YYYYMMDD-HHMMSS-xxxxxx` (6 random hex digits).
 
-## Recovery
+## Recovery (`recovery.py`, `system/locks.py`)
 
-- Runs automatically at the start of `record` and `sessions`, and on demand with `recover`.
-- A session in `recording` whose lock is free (no live process) becomes `interrupted`.
-  The lock (`msvcrt.locking`, released by the OS when the process dies) prevents "repairing"
-  a recording that is still running in another terminal.
-- For each WAV without a manifest row: repair the header from the file size and register it.
-- `ended_at` comes from the mtime of the last segment.
-- Known loss: the `gap_ms` of the segment open at crash time is lost (recorded as 0), since
-  rows are written when a segment closes.
+- Runs automatically at the start of `record` and `sessions`, and on demand with `recover`
+  (CLI piece). Until then: `scripts/capture_probe.py --recover`.
+- Locks: `<session>/session.lock`, two bytes locked with `msvcrt.locking` (released by the OS
+  when the holding process dies, also on TerminateProcess). Byte 0 is held by the owner (the
+  process that started the recording), taken in `new_session` before the row is inserted;
+  byte 1 by the capture process (`SessionSink`). Recovery touches a session only if it can
+  take both, so it never "repairs" a recording still running in another terminal, nor one
+  whose row was just created and whose capture process is still starting.
+  Deviation from the first plan (one lock, held by the child): with a single child lock, a
+  recovery started in another terminal during the ~1 s spawn of the child would have seen a
+  `recording` row with a free lock.
+- If only the capture process dies, its owner recovers the session itself, passing its own
+  lock (`recover_session(..., owner_lock=...)`); recovery in other processes keeps skipping it.
+- Sessions in `recording` with both locks free: read the mtime of the last segment first (the
+  repair would change it), repair the header of every segment without a manifest row from the
+  file size (half a trailing sample is cut; a header cut short is completed with 0 frames),
+  add those rows, set `interrupted` (`failed` if there is no audio at all) and `ended_at` =
+  that mtime. One transaction per session.
+- Sessions already `recorded` / `interrupted`: only missing manifest rows are added (rows lost
+  to a database error during recording).
+- Segment N is placed at (N-1) full segments by construction. Reported as problems, without
+  stopping the rest: files that are not our segments (left untouched), numbering holes, rows
+  whose file is missing, a non-final segment shorter than 60 s, a missing session folder
+  (`failed`). Problems alone do not make a session show up again on every run.
+- Known loss: the `gap_ms` of a segment added by recovery is 0, since rows are written when a
+  segment closes and only the capture process knew its gap.
 
 ## CLI
 
@@ -348,6 +367,12 @@ The CLI always prints the path in use.
     device handling.
 - Silence limit: with `--silence-limit 3` and nothing playing, the probe stopped by itself
   after 3.0 s of timeline, status `recorded`.
+- Recovery piece, on the test PC (nothing playing, so the timeline was silence):
+  - `taskkill /F` on the capture process after ~4 s: the probe (owner) recovered the session:
+    `interrupted`, one segment of 3.972 s, header repaired; `ended_at - started_at` = 4.07 s
+    (the 0.1 s difference is the idle-fill margin).
+  - `taskkill /F /T` on the probe (both processes) after ~4 s, then `--recover`: `interrupted`,
+    3.955 s, header repaired; `ended_at - started_at` = 4.06 s.
 
 ## Carried over to step 2 (transcription)
 

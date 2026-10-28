@@ -7,7 +7,13 @@ import pytest
 from fakes import FakeClock
 
 from studyscribe.audio import wav as wav_module
-from studyscribe.audio.wav import HEADER_SIZE, WavWriter, wav_header
+from studyscribe.audio.wav import (
+    HEADER_SIZE,
+    ForeignWavError,
+    WavWriter,
+    repair_wav_header,
+    wav_header,
+)
 
 
 def header_sizes(path: Path) -> tuple[int, int]:
@@ -81,3 +87,61 @@ def test_close_is_idempotent(tmp_path: Path) -> None:
     writer.close()
     writer.close()
     assert writer.closed
+
+
+# --- header repair (recovery) -----------------------------------------------------------------
+
+
+def crashed_segment(path: Path, data: bytes, header_frames: int = 0) -> Path:
+    """A segment as a kill leaves it: data on disk, header still counting `header_frames`."""
+    path.write_bytes(wav_header(header_frames * 2) + data)
+    return path
+
+
+def test_repair_counts_the_data_the_header_was_hiding(tmp_path: Path) -> None:
+    samples = np.arange(1_000, dtype="<i2")
+    path = crashed_segment(tmp_path / "000003.wav", samples.tobytes(), header_frames=400)
+    assert repair_wav_header(path) == (1_000, 16_000, True)
+    with wave.open(str(path)) as w:
+        assert w.getnframes() == 1_000
+        assert np.array_equal(np.frombuffer(w.readframes(1_000), dtype="<i2"), samples)
+
+
+def test_repair_cuts_a_trailing_half_sample(tmp_path: Path) -> None:
+    path = crashed_segment(tmp_path / "a.wav", b"\x01\x00" * 10 + b"\x7f")
+    assert repair_wav_header(path) == (10, 16_000, True)
+    assert path.stat().st_size == HEADER_SIZE + 20
+    assert header_sizes(path) == (36 + 20, 20)
+
+
+def test_repair_leaves_a_consistent_file_alone(tmp_path: Path) -> None:
+    path = crashed_segment(tmp_path / "a.wav", b"\x00\x00" * 50, header_frames=50)
+    before = path.read_bytes()
+    assert repair_wav_header(path) == (50, 16_000, False)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("size", [0, 10, HEADER_SIZE - 1])
+def test_repair_completes_a_header_cut_short(tmp_path: Path, size: int) -> None:
+    path = tmp_path / "a.wav"
+    path.write_bytes(wav_header(0)[:size])
+    assert repair_wav_header(path) == (0, 16_000, True)
+    assert path.read_bytes() == wav_header(0)
+
+
+def test_repair_rejects_foreign_files_without_touching_them(tmp_path: Path) -> None:
+    stereo = tmp_path / "stereo.wav"
+    with wave.open(str(stereo), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(16_000)
+        w.writeframes(b"\x00\x00" * 200)
+    text = tmp_path / "notes.wav"
+    text.write_bytes(b"these are not samples, just text in a file named like one")
+    short = tmp_path / "short.wav"
+    short.write_bytes(b"RIFX")
+    for path in (stereo, text, short):
+        before = path.read_bytes()
+        with pytest.raises(ForeignWavError):
+            repair_wav_header(path)
+        assert path.read_bytes() == before

@@ -7,10 +7,13 @@ headphones must reopen the stream, with the hole counted as gap.
 Usage:
     .venv\\Scripts\\python scripts\\capture_probe.py [--seconds N] [--out FILE.wav] [--data-dir PATH]
     .venv\\Scripts\\python scripts\\capture_probe.py --session "Title" [--seconds N]
+    .venv\\Scripts\\python scripts\\capture_probe.py --recover [--data-dir PATH]
 
 Stop early with Ctrl+C. Default output: <data dir>\\probe\\probe-<timestamp>.wav
 With --session the probe records into a real session instead (60 s segments + database rows)
-and prints the manifest at the end.
+and prints the manifest at the end; if the capture process dies (e.g. killed from Task Manager)
+the probe recovers the session itself, as the owner. --recover repairs every abandoned session
+(e.g. after killing both processes) and prints what it did.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from studyscribe.config import (
 from studyscribe.db import repo
 from studyscribe.db.connection import open_database
 from studyscribe.recording import RecorderHandle
+from studyscribe.recovery import Recovered, recover_all, recover_session
 from studyscribe.session import SessionSink, new_session
 
 
@@ -128,6 +132,7 @@ def main() -> int:
     parser.add_argument("--out", help="output WAV path")
     parser.add_argument("--data-dir", help="data directory (default output path, sessions)")
     parser.add_argument("--session", metavar="TITLE", help="record into a real session")
+    parser.add_argument("--recover", action="store_true", help="recover abandoned sessions")
     parser.add_argument(
         "--silence-limit",
         type=float,
@@ -138,11 +143,16 @@ def main() -> int:
     args = parser.parse_args()
 
     data_dir = resolve_data_dir(args.data_dir)
-    session_id = None
+    if args.recover:
+        print(f"Data directory: {data_dir}")
+        with closing(open_database(db_path(data_dir))) as conn:
+            print_recovery(recover_all(conn, data_dir))
+        return 0
+    session_id = owner_lock = None
     if args.session:
         print(f"Data directory: {data_dir}")
         with closing(open_database(db_path(data_dir))) as conn:
-            session_id = new_session(conn, data_dir, title=args.session)
+            session_id, owner_lock = new_session(conn, data_dir, title=args.session)
         print(f"Session: {session_id}\nFolder: {session_dir(data_dir, session_id)}")
         sink_factory = functools.partial(SessionSink, str(data_dir), session_id)
     else:
@@ -172,9 +182,30 @@ def main() -> int:
     for event in handle.events():
         show(event)
     print(f"Capture process exit code: {exitcode}")
-    if session_id:
+    if session_id and owner_lock:
+        try:
+            if exitcode != 0:
+                print("The capture process did not exit cleanly: recovering the session.")
+                with closing(open_database(db_path(data_dir))) as conn:
+                    result = recover_session(conn, data_dir, session_id, owner_lock=owner_lock)
+                print_recovery([result] if result else [])
+        finally:
+            owner_lock.release()
         print_manifest(data_dir, session_id)
     return 0 if exitcode == 0 else 1
+
+
+def print_recovery(results: list[Recovered]) -> None:
+    if not results:
+        print("Recovery: nothing to do.")
+    for r in results:
+        print(
+            f"Recovered {r.session_id}: {r.status_before} -> {r.status_after}, "
+            f"{r.duration_ms / 1000:.3f} s, segments added {r.added or '-'}, "
+            f"files repaired {r.repaired or '-'}"
+        )
+        for problem in r.problems:
+            print(f"  PROBLEM: {problem}")
 
 
 def print_manifest(data_dir: Path, session_id: str) -> None:

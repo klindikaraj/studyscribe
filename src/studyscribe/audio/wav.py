@@ -7,12 +7,23 @@ import struct
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 from studyscribe.config import SAMPLE_RATE
 
 HEADER_SIZE = 44
+
+
+class ForeignWavError(ValueError):
+    """The file does not start like a segment written by WavWriter: it is left untouched."""
+
+
+class WavRepair(NamedTuple):
+    frames: int
+    sample_rate: int
+    changed: bool  # the header (or a trailing half sample) had to be fixed
 
 
 def wav_header(data_bytes: int, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -98,3 +109,46 @@ class WavWriter:
         self._file.seek(40)
         self._file.write(struct.pack("<I", data_bytes))
         self._file.seek(0, os.SEEK_END)
+
+
+def repair_wav_header(path: Path | str) -> WavRepair:
+    """Make the header sizes match the file size, for a segment left behind by a crash.
+
+    While recording, the header is patched only every second, so after a kill it can hide up to
+    a second of audio that is in the file. A trailing odd byte (half a sample) is cut off. A file
+    shorter than the header that starts like one (killed right after creating it) gets a full
+    header with 0 frames. Anything that does not look like a WavWriter segment (mono 16-bit PCM)
+    raises ForeignWavError and is not modified.
+    """
+    path = Path(path)
+    with open(path, "r+b") as f:
+        header = f.read(HEADER_SIZE)
+        if len(header) < HEADER_SIZE:
+            if not wav_header(0).startswith(header):
+                raise ForeignWavError(f"{path.name}: {len(header)} bytes, not a segment header")
+            f.seek(0)
+            f.truncate()
+            f.write(wav_header(0))
+            f.flush()
+            os.fsync(f.fileno())
+            return WavRepair(0, SAMPLE_RATE, True)
+        sample_rate = struct.unpack_from("<I", header, 24)[0]
+        expected = wav_header(0, sample_rate)
+        # Everything but the two size fields (bytes 4-7 and 40-43) must be ours.
+        if header[:4] != expected[:4] or header[8:40] != expected[8:40]:
+            raise ForeignWavError(f"{path.name}: not a mono 16-bit PCM segment")
+        data_bytes = f.seek(0, os.SEEK_END) - HEADER_SIZE
+        changed = False
+        if data_bytes % 2:
+            data_bytes -= 1
+            f.truncate(HEADER_SIZE + data_bytes)
+            changed = True
+        correct = wav_header(data_bytes, sample_rate)
+        if header != correct:
+            f.seek(0)
+            f.write(correct)
+            changed = True
+        if changed:
+            f.flush()
+            os.fsync(f.fileno())
+    return WavRepair(data_bytes // 2, sample_rate, changed)

@@ -26,7 +26,7 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1, silence filling and device changes done (next: recovery).
+Current state: step 1, recovery done (next: CLI subcommands).
 
 ## Architecture principles
 
@@ -63,9 +63,12 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
   sound + limit, so a clock jump after a system sleep cannot write hours of silence.
 - Anti-standby: `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` in the capture
   thread, released in `finally`.
-- Recovery (at start of `record`/`sessions`, or `recover`): sessions in `recording` whose lock
-  is free become `interrupted`; WAV headers are repaired from the file size; unregistered
-  segments are added to the manifest.
+- Recovery (`recovery.py`; at start of `record`/`sessions`, or `recover`): a session in
+  `recording` is touched only if both byte locks of `<session>/session.lock` are free (byte 0:
+  owner/CLI, taken before the row exists; byte 1: capture process). Headers of unregistered
+  segments are repaired from the file size, the segments added to the manifest, status
+  `interrupted` (`failed` without audio), `ended_at` = mtime of the last segment. If only the
+  capture process dies, the owner recovers its own session (`owner_lock=`).
 - Deviations from the original schema: `sessions.status` also allows `recorded` (recorded, not
   yet transcribed); `courses` exists from migration v1 (unique title, case-insensitive);
   session IDs look like `20261028-142301-3f9a2c` (sortable, readable).
@@ -77,30 +80,38 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
 src/studyscribe/
   cli.py              command-line entry point (`studyscribe`, `python -m studyscribe`)
   config.py           data directory resolution and shared settings
-  recording.py        RecorderHandle: parent side of the capture process (start/events/stop)
-  session.py          new_session (parent) and SessionSink (capture process: segments + manifest)
+  recording.py        RecorderHandle: parent side of the capture process (start/events/stop/kill)
+  session.py          new_session (parent, owner lock) and SessionSink (capture process: capture
+                      lock, segments + manifest)
+  recovery.py         recover_all / recover_session: repair abandoned sessions
   audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
   audio/timeline.py   TimelineAligner: packets -> gap-free timeline aligned to the clock (pure)
   audio/devices.py    DefaultOutputMonitor: default output endpoint ID through COM (ctypes)
   audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop (device
                       reopen), capture_main
-  audio/wav.py        WavWriter: unbuffered, header patched every 1 s, fsync every 10 s
+  audio/wav.py        WavWriter (unbuffered, header patched every 1 s, fsync every 10 s),
+                      repair_wav_header
   audio/segments.py   SegmentWriter: exact 60 s segments, gap frames per segment
   db/connection.py    connect (no migration), open_database (migrates), transaction
   db/migrations.py    MIGRATIONS list, PRAGMA user_version
   db/repo.py          queries on courses, sessions, audio_segments
   system/power.py     keep_system_awake (SetThreadExecutionState)
+  system/locks.py     ByteLock: one-byte file lock released by the OS when the process dies
 tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
-scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, or --session "Title"
+scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --session "Title",
+                           --recover, --silence-limit SECONDS
 ```
 
-Still planned for step 1: `recovery.py`, `system/locks.py`, CLI subcommands,
-`scripts/manual_recording_test.py`, `docs/manual-test-recording.md`.
+Still planned for step 1: CLI subcommands, `scripts/manual_recording_test.py`,
+`docs/manual-test-recording.md`.
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
 top-level classes/functions or `functools.partial` of them, never lambdas. Tests always pass a
 fake `default_output_factory` (e.g. `ScriptedDefaultOutput`), otherwise the real COM monitor
 runs. In-process loop tests use `FakeClock` + `ClockedSource` (packets follow the fake clock).
+`tests/conftest.py` has the `data_dir`, `db` and `start_session` fixtures (`start_session`
+releases the owner lock after the test). Tests that start a capture process must kill it in a
+`finally`, or a failed assertion leaves pytest waiting for the process forever.
 
 ## Data directory
 
@@ -120,6 +131,7 @@ py -3.12 -m venv .venv                          # create the venv
 .venv\Scripts\python -m pytest                  # run tests
 .venv\Scripts\studyscribe --help                # CLI
 .venv\Scripts\python scripts\capture_probe.py --seconds 60   # real-hardware capture probe
+.venv\Scripts\python scripts\capture_probe.py --recover      # recover abandoned sessions
 ```
 
 ## Working rules

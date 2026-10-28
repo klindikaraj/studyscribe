@@ -3,7 +3,6 @@ import re
 import sqlite3
 import time
 import wave
-from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -12,11 +11,17 @@ import pytest
 from fakes import FakeSource, ScriptedDefaultOutput, wait_for
 
 from studyscribe.audio.capture import CaptureConfig
-from studyscribe.config import db_path, session_dir
+from studyscribe.config import session_dir
 from studyscribe.db import repo
-from studyscribe.db.connection import open_database
 from studyscribe.recording import RecorderHandle
-from studyscribe.session import SessionSink, final_status, new_session
+from studyscribe.session import (
+    CAPTURE_LOCK_BYTE,
+    OWNER_LOCK_BYTE,
+    SessionSink,
+    final_status,
+    new_session,
+    session_lock,
+)
 
 
 class Events:
@@ -30,18 +35,6 @@ class Events:
         return [e for e in self.events if e["type"] == kind]
 
 
-@pytest.fixture
-def data_dir(tmp_path: Path) -> Path:
-    return tmp_path / "data"
-
-
-@pytest.fixture
-def db(data_dir: Path):
-    conn = open_database(db_path(data_dir))
-    yield conn
-    conn.close()
-
-
 # --- ids and rows ------------------------------------------------------------------------
 
 
@@ -51,12 +44,12 @@ def test_session_id_is_readable_and_sortable() -> None:
     assert repo.new_session_id(datetime(2026, 10, 28, 14, 23, 1)) != sid
 
 
-def test_new_session_creates_folder_row_and_course(db, data_dir: Path) -> None:
-    sid = new_session(db, data_dir, "Lecture 1", course="Machine Learning")
+def test_new_session_creates_folder_row_and_course(db, data_dir: Path, start_session) -> None:
+    sid = start_session("Lecture 1", course="Machine Learning")
     assert (session_dir(data_dir, sid) / "audio").is_dir()
     row = repo.get_session(db, sid)
     assert (row["title"], row["status"]) == ("Lecture 1", "recording")
-    sid2 = new_session(db, data_dir, "Lecture 2", course="machine learning")
+    sid2 = start_session("Lecture 2", course="machine learning")
     assert repo.get_session(db, sid2)["course_id"] == row["course_id"]
     assert db.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 1
 
@@ -87,8 +80,32 @@ def test_course_is_reused_whatever_case_and_accent_encoding(db) -> None:
     assert (row["title"], row["title_key"]) == ("Èlite Analysis", "èlite analysis")
 
 
-def test_new_session_without_course(db, data_dir: Path) -> None:
-    sid = new_session(db, data_dir, None)
+def test_new_session_holds_the_owner_lock(db, data_dir: Path) -> None:
+    sid, lock = new_session(db, data_dir, "t")
+    try:
+        assert lock.held
+        assert not session_lock(data_dir, sid, OWNER_LOCK_BYTE).acquire()
+    finally:
+        lock.release()
+    other = session_lock(data_dir, sid, OWNER_LOCK_BYTE)
+    assert other.acquire()
+    other.release()
+
+
+def test_sink_holds_the_capture_lock_until_closed(db, data_dir: Path, start_session) -> None:
+    sid = start_session("t")
+    sink = SessionSink(str(data_dir), sid)
+    probe = session_lock(data_dir, sid, CAPTURE_LOCK_BYTE)
+    assert not probe.acquire()
+    with pytest.raises(RuntimeError, match="already being recorded"):
+        SessionSink(str(data_dir), sid)
+    sink.close("requested")
+    assert probe.acquire()
+    probe.release()
+
+
+def test_new_session_without_course(db, data_dir: Path, start_session) -> None:
+    sid = start_session(None)
     assert repo.get_session(db, sid)["course_id"] is None
 
 
@@ -110,8 +127,8 @@ def test_final_status(reason: str, frames: int, status: str) -> None:
 # --- SessionSink, in-process -------------------------------------------------------------
 
 
-def test_sink_writes_segments_manifest_and_status(db, data_dir: Path) -> None:
-    sid = new_session(db, data_dir, "t")
+def test_sink_writes_segments_manifest_and_status(db, data_dir: Path, start_session) -> None:
+    sid = start_session("t")
     provisional = repo.get_session(db, sid)["started_at"]
     time.sleep(0.01)
     events = Events()
@@ -140,8 +157,10 @@ def test_sink_writes_segments_manifest_and_status(db, data_dir: Path) -> None:
     assert events.of_type("warning") == []
 
 
-def test_database_errors_do_not_stop_the_audio(db, data_dir: Path, monkeypatch) -> None:
-    sid = new_session(db, data_dir, "t")
+def test_database_errors_do_not_stop_the_audio(
+    db, data_dir: Path, start_session, monkeypatch
+) -> None:
+    sid = start_session("t")
 
     def broken(*args):
         raise sqlite3.OperationalError("database is locked")
@@ -158,8 +177,8 @@ def test_database_errors_do_not_stop_the_audio(db, data_dir: Path, monkeypatch) 
     assert repo.get_session(db, sid)["status"] == "recorded"
 
 
-def test_failure_before_start_marks_the_session_failed(db, data_dir: Path) -> None:
-    sid = new_session(db, data_dir, "t")
+def test_failure_before_start_marks_the_session_failed(db, data_dir: Path, start_session) -> None:
+    sid = start_session("t")
     SessionSink(str(data_dir), sid).close("error")
     assert repo.get_session(db, sid)["status"] == "failed"
 
@@ -167,8 +186,8 @@ def test_failure_before_start_marks_the_session_failed(db, data_dir: Path) -> No
 # --- end to end: capture process writing a real session ------------------------------------
 
 
-def test_capture_process_records_a_session(db, data_dir: Path) -> None:
-    sid = new_session(db, data_dir, "end to end")
+def test_capture_process_records_a_session(db, data_dir: Path, start_session) -> None:
+    sid = start_session("end to end")
     config = CaptureConfig(
         sink_factory=functools.partial(SessionSink, str(data_dir), sid, segment_frames=8_000),
         source_factory=functools.partial(FakeSource, frames_per_drain=2_400),
