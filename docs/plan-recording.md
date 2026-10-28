@@ -102,13 +102,19 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
 
 ## Device changes
 
-- Every ~1.5 s read the default render endpoint ID through COM (`IMMDeviceEnumerator`).
-- On change, or if the stream is no longer active: close the stream, re-initialize PortAudio
-  (it caches the device list at init), open the new loopback, fill the hole with silence and
-  add it to `gap_ms`.
+- Reopen the stream when (a) `is_active()` turns False (checked every tick: the recorded device
+  vanished) or (b) the default render endpoint ID changes (read through COM,
+  `IMMDeviceEnumerator`, every 0.5 s: a manual switch of the default output leaves the old
+  stream active but silent).
+- Reopen = close the stream, re-initialize PortAudio (it caches the device list at init), open
+  the loopback of the current default. Measured cost: 25-65 ms.
+- If the reopen fails (e.g. the endpoint is still appearing after replugging), retry every
+  0.5 s. If no output exists at all, the timeline keeps advancing with silence meanwhile.
+- The hole is always filled by the aligner and counted in `gap_ms`, from
+  `max(last packet, detection - 0.5 s)` to the successful reopen, so real silence before an
+  unplug (e.g. during a pause) is not counted as a gap.
 - `gap_ms` = milliseconds of a segment that are synthetic because of a device switch. The
   timeline itself never has holes.
-- If no output exists at all, the timeline keeps advancing with silence and the poll retries.
 - Closing a stream whose device has vanished must not crash or hang the capture loop.
 
 ### Test hardware (verified by the user)
@@ -121,6 +127,9 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
 - So unplugging makes the device being recorded vanish while the stream is open (a stream
   error, not a clean close). Replugging switches back. The manual test covers both
   directions, each with the hole filled with silence and counted in `gap_ms`.
+- While the headphones are unplugged the lecture keeps playing on the monitor, so after the
+  reopen it is recorded from the NVIDIA endpoint: each switch costs a gap of about 0.5 s,
+  not the whole unplugged period.
 
 ## Anti-standby
 
@@ -215,10 +224,10 @@ The CLI always prints the path in use.
 
 ## Unverified assumptions (check during capture work)
 
-- The loopback delivers no packets while nothing is playing. The aligner also works if it
-  does deliver silent packets.
-- What PortAudio does when the recorded device vanishes: whether `stream.is_active()` turns
-  False, the callback just stops, or an error is raised.
+- (Verified, see findings: no packets during silence; `is_active()` turns False when the
+  recorded device vanishes.)
+- That a manual switch of the default output leaves the old stream active (handled anyway by
+  the default-ID poll).
 - Whether lowering an app's volume lowers the recording, and what a muted master volume does
   (probably driver dependent).
 - DRM-protected content might be captured as silence (unlikely for course platforms).
@@ -231,8 +240,18 @@ The CLI always prints the path in use.
   flags. Audio written matched wall time (5.70 s for 5.70 s).
 - Killing the parent process (TerminateProcess): the capture child noticed within 0.2 s,
   stopped cleanly and left a WAV with a consistent header.
-- Still open: behaviour with nothing playing, behaviour when the recorded device vanishes,
-  Ctrl+C in a real console.
+- 180 s probe by the user (video paused, headphones unplugged and replugged, Ctrl+C):
+  - Silence: after a pause the player kept sending zero-filled packets for about 10 s, then
+    packets stopped entirely while `is_active()` stayed True; 19.8 s were missing without
+    filling. The ~10 s tail is the player's behaviour, not WASAPI's: other players may stop at
+    once or never.
+  - Unplug: `is_active()` turned False within about 0.5 s, no error, no hang. The dead stream did
+    not recover when the endpoint came back: reopening must be explicit. Closing the dead stream
+    at the end raised nothing.
+  - Clock drift: `missing` stayed within ±0.02 s over 56 s of continuous playback. This only
+    rules out drift above a few hundred ppm; measure it in the long test.
+  - Ctrl+C: clean stop, exit code 0, no traceback from the child.
+- PortAudio re-init + open + close of the loopback: 25-65 ms.
 
 ## Tests
 
