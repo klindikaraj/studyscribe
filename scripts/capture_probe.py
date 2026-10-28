@@ -1,8 +1,8 @@
 """Capture probe: record the default output's loopback into one WAV and show what the stream does.
 
-Used to check, on real hardware, the open assumptions of the capture design:
-- does the loopback stop delivering packets while nothing plays? (audio falls behind wall time)
-- what happens when the recorded device disappears (e.g. headphones unplugged)?
+Used to check the capture design on real hardware: the timeline must follow wall time through
+silence and pauses (`missing` stays around 0.1 s at most), and unplugging or replugging the
+headphones must reopen the stream, with the hole counted as gap.
 
 Usage:
     .venv\\Scripts\\python scripts\\capture_probe.py [--seconds N] [--out FILE.wav] [--data-dir PATH]
@@ -76,7 +76,8 @@ class Printer:
             level = f"{self.level_db:6.1f}" if self.level_db is not None else "     -"
             print(
                 f"[{clock}] t={event['wall_s']:7.1f}s audio={event['audio_s']:7.1f}s "
-                f"missing={missing:6.2f}s packets=+{new_packets:<4} "
+                f"missing={missing:5.2f}s silence={event['silence_s']:6.1f}s "
+                f"gap={event['gap_s']:5.2f}s packets=+{new_packets:<4} "
                 f"max_gap={event['max_gap_ms']:5}ms idle={event['since_last_packet_ms']:6}ms "
                 f"flagged={event['flagged_packets']:<3} active={event['stream_active']!s:5} "
                 f"rms={level} dBFS"
@@ -90,11 +91,23 @@ class Printer:
                 f"{event['start_ms'] / 1000:.3f}-{event['end_ms'] / 1000:.3f} s, "
                 f"gap {event['gap_ms']} ms"
             )
+        elif kind == "device_lost":
+            print(
+                f"[{clock}] >>> device lost at t={event['at_s']:.2f}s ({event['reason']}): "
+                f"{event['device']}"
+            )
+        elif kind == "device_opened":
+            print(
+                f"[{clock}] >>> reopened on {event['device']}, {event['rate']} Hz, "
+                f"{event['channels']} ch: gap {event['gap_ms']} ms, "
+                f"{event['attempts']} attempt(s)"
+            )
         elif kind == "stopped":
             missing = event["wall_s"] - event["audio_s"]
             print(
                 f"[{clock}] stopped ({event['reason']}): wall {event['wall_s']:.2f}s, "
                 f"audio {event['audio_s']:.2f}s, missing {missing:.2f}s, "
+                f"silence {event['silence_s']:.2f}s, gap {event['gap_s']:.2f}s, "
                 f"{event['packets']} packets"
             )
         elif kind == "error":
@@ -155,17 +168,18 @@ def print_manifest(data_dir: Path, session_id: str) -> None:
         segments = repo.list_audio_segments(conn, session_id)
     print(f"\nSession {session_id}: status={session['status']}")
     print(f"  started_at={session['started_at']}  ended_at={session['ended_at']}")
-    total_ms = 0
+    total_ms = gap_ms = 0
     for seg in segments:
         file = session_dir(data_dir, session_id) / seg["path"]
         with wave.open(str(file)) as w:
             file_ms = w.getnframes() * 1000 // w.getframerate()
         total_ms += seg["end_ms"] - seg["start_ms"]
+        gap_ms += seg["gap_ms"]
         print(
             f"  {seg['seq']:>4}  {seg['path']}  {seg['start_ms']:>9}-{seg['end_ms']:<9} ms"
             f"  gap {seg['gap_ms']:>5} ms  file {file_ms} ms"
         )
-    print(f"  total {total_ms / 1000:.3f} s in {len(segments)} segments")
+    print(f"  total {total_ms / 1000:.3f} s in {len(segments)} segments, gap {gap_ms} ms")
 
 
 if __name__ == "__main__":

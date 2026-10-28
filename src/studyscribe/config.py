@@ -16,6 +16,18 @@ SAMPLE_RATE = 16_000
 SEGMENT_SECONDS = 60
 SEGMENT_FRAMES = SAMPLE_RATE * SEGMENT_SECONDS
 
+# Timeline alignment (see audio/timeline.py): while audio flows, silence is inserted only when
+# the timeline is more than FILL_THRESHOLD_S behind the clock; after IDLE_FILL_AFTER_S without
+# packets the timeline is filled up to now - IDLE_FILL_MARGIN_S.
+FILL_THRESHOLD_S = 0.1
+IDLE_FILL_AFTER_S = 0.5
+IDLE_FILL_MARGIN_S = 0.1
+
+# Device changes: how often the default output is checked, and how often a failed reopen of
+# the stream is retried.
+DEVICE_POLL_S = 0.5
+REOPEN_RETRY_S = 0.5
+
 DB_FILENAME = "app.db"
 AUDIO_SUBDIR = "audio"
 

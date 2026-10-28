@@ -26,7 +26,7 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1, segments and manifest done (next: silence filling and device changes).
+Current state: step 1, silence filling and device changes done (next: recovery).
 
 ## Architecture principles
 
@@ -47,12 +47,17 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
 - Segments hold exactly 60 s of samples, so segment N starts at (N-1)·60000 ms:
   `<data>/sessions/<session_id>/audio/000001.wav …`. Unbuffered writes, header patched every
   second, fsync every 10 s. Manifest row in `audio_segments` when a segment closes.
-- Timeline aligned to `time.perf_counter`: silence is inserted only when the deficit exceeds a
-  threshold (100 ms), and after 0.5 s without data the timeline is filled up to now − 100 ms.
-  Real audio is never dropped.
-- Default output polled via COM (ctypes) every ~1.5 s. On change, or if the stream dies: close,
-  re-init PortAudio (its device list is cached), reopen, fill the hole and add it to `gap_ms`
-  (`gap_ms` = milliseconds of the segment that are synthetic because of a device switch).
+- Timeline aligned to `time.perf_counter` (`audio/timeline.py`): while audio flows, silence is
+  inserted only when the deficit exceeds 100 ms; after 0.5 s without data the timeline is filled
+  up to now − 100 ms; the first packet after silence (start of the recording, pause, device
+  switch) is placed exactly, so a recording that starts in silence is filled from t0. Real
+  audio is never dropped.
+- Device changes: reopen when `is_active()` turns False (checked every tick) or the default
+  output's endpoint ID changes (COM via ctypes, `audio/devices.py`, polled every 0.5 s). Reopen
+  = new `LoopbackSource` (fresh PortAudio, whose device list is cached), retried every 0.5 s.
+  The hole, from `max(last packet, detection − 0.5 s)` to the reopen, is filled with silence
+  and counted in `gap_ms` (milliseconds of the segment that are synthetic because of a device
+  switch). The first stream must open; after that a lost device never stops the recording.
 - Anti-standby: `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` in the capture
   thread, released in `finally`.
 - Recovery (at start of `record`/`sessions`, or `recover`): sessions in `recording` whose lock
@@ -72,7 +77,10 @@ src/studyscribe/
   recording.py        RecorderHandle: parent side of the capture process (start/events/stop)
   session.py          new_session (parent) and SessionSink (capture process: segments + manifest)
   audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
-  audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop, capture_main
+  audio/timeline.py   TimelineAligner: packets -> gap-free timeline aligned to the clock (pure)
+  audio/devices.py    DefaultOutputMonitor: default output endpoint ID through COM (ctypes)
+  audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop (device
+                      reopen), capture_main
   audio/wav.py        WavWriter: unbuffered, header patched every 1 s, fsync every 10 s
   audio/segments.py   SegmentWriter: exact 60 s segments, gap frames per segment
   db/connection.py    connect (no migration), open_database (migrates), transaction
@@ -83,12 +91,13 @@ tests/                pytest, no audio hardware required; tests/fakes.py holds f
 scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, or --session "Title"
 ```
 
-Still planned for step 1: `recovery.py`, `audio/timeline.py`, `audio/devices.py`,
-`system/locks.py`, CLI subcommands, `scripts/manual_recording_test.py`,
-`docs/manual-test-recording.md`.
+Still planned for step 1: `recovery.py`, `system/locks.py`, CLI subcommands,
+`scripts/manual_recording_test.py`, `docs/manual-test-recording.md`.
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
-top-level classes/functions or `functools.partial` of them, never lambdas.
+top-level classes/functions or `functools.partial` of them, never lambdas. Tests always pass a
+fake `default_output_factory` (e.g. `ScriptedDefaultOutput`), otherwise the real COM monitor
+runs. In-process loop tests use `FakeClock` + `ClockedSource` (packets follow the fake clock).
 
 ## Data directory
 

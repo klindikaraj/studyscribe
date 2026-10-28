@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fakes import FakeSource, wait_for
+from fakes import FakeSource, ScriptedDefaultOutput, wait_for
 
 from studyscribe.audio.capture import CaptureConfig
 from studyscribe.config import db_path, session_dir
@@ -171,6 +171,7 @@ def test_capture_process_records_a_session(db, data_dir: Path) -> None:
     config = CaptureConfig(
         sink_factory=functools.partial(SessionSink, str(data_dir), sid, segment_frames=8_000),
         source_factory=functools.partial(FakeSource, frames_per_drain=2_400),
+        default_output_factory=ScriptedDefaultOutput,
     )
     handle = RecorderHandle(config)
     handle.start()

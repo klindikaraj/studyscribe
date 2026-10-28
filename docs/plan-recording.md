@@ -12,9 +12,9 @@ kill loses at most a few seconds and the timeline stays aligned.
 ## Pieces (one at a time, stop after each with a test summary)
 
 1. Setup (done)
-2. Capture: loopback in callback mode, downmix + resample, separate process, anti-standby
-3. Segments and manifest: 60 s WAV segments, SQLite schema v1 and migrations
-4. Silence filling and device changes
+2. Capture: loopback in callback mode, downmix + resample, separate process, anti-standby (done)
+3. Segments and manifest: 60 s WAV segments, SQLite schema v1 and migrations (done)
+4. Silence filling and device changes (done)
 5. Recovery
 6. CLI: `record`, `sessions`, `recover`
 7. Tests: remaining unit tests, manual checklist and verification script
@@ -79,18 +79,32 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
 - Callback mode rather than blocking `read()`: when nothing plays, a blocking read would
   stall the loop, so no silence filling and no device checks.
 
-## Timeline alignment (`TimelineAligner`, pure, injectable clock)
+## Timeline alignment (`audio/timeline.py`, `TimelineAligner`, pure)
 
-- `expected = (clock() - t0) * 16000`; `written` = samples emitted so far.
-- On a block of n samples: if `expected_at_block_start - written` exceeds 100 ms, emit that
-  much silence first, then the block. Below the threshold do nothing, so normal jitter never
-  moves anything.
-- No data for 0.5 s (paused video): emit silence up to `now - 100 ms`. Files keep growing and
-  segments keep rotating during pauses; the margin avoids writing "into the future".
+- `expected(t) = (t - t0) * 16000`; `frames` = samples on the timeline so far. All times are
+  passed in, so tests drive it with made-up packets and clocks.
+- Start of a packet's audio: `arrival - duration`, tightened by the following packets of the
+  same drain (a packet ends no later than the next one starts). After a hiccup, packets held
+  in the driver arrive together; this keeps such a burst from being taken for a hole.
+- While audio flows: if `expected(packet start) - frames` exceeds 100 ms, write that much
+  silence first, then the packet. Below the threshold do nothing, so jitter never moves audio.
+- No data for 0.5 s (paused video, nothing playing yet, device being reopened): write silence
+  up to `now - 100 ms`. Files keep growing and segments keep rotating during pauses; the
+  margin avoids writing "into the future".
+- The first packet after silence (start of the recording, a pause, a reopened stream) is
+  placed exactly at its start time, threshold or not: nothing continuous is broken there.
+  So a recording started before pressing play is filled from t0 and segment 1 starts at the
+  start of the recording (found in the user's test of piece 3: without this, the whole
+  timeline was shifted by the 1.1 s before the first packet).
+- Before inserting silence the resampler is flushed and restarted, so the last ~20 ms of
+  audio it holds land before the silence, not after it.
+- At stop: flush, then fill up to the stop time, so the timeline ends at wall time.
 - Error stays within about one threshold (100 ms) and does not accumulate, because every fill
   re-anchors to the clock.
 - Real audio is never dropped. If the device clock runs faster than the system clock
   (ppm-level drift, about 0.3 s over 3 h at 30 ppm), the surplus is absorbed at the next pause.
+  If it runs slower, about 100 ms of silence is inserted each time the deficit crosses the
+  threshold (once every ~55 min at 30 ppm).
 
 ## Segments
 
@@ -125,6 +139,19 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
 - `gap_ms` = milliseconds of a segment that are synthetic because of a device switch. The
   timeline itself never has holes.
 - Closing a stream whose device has vanished must not crash or hang the capture loop.
+- Implementation (`audio/capture.py`, `audio/devices.py`):
+  - One `LoopbackSource` per stream; after a loss the old one is closed, its queued packets
+    are still written, then the gap opens.
+  - The default output is read with `IMMDeviceEnumerator::GetDefaultAudioEndpoint(eRender,
+    eMultimedia)`, the role PortAudio uses for its default output; `None` when there is no
+    output at all. COM is initialised (apartment-threaded) on the capture thread.
+  - If COM cannot be read: one warning, and the recording goes on without the default-ID poll
+    (an unplugged device is still followed because its stream stops).
+  - A failed reopen emits one warning per distinct error, not one per attempt.
+  - Events for the parent: `device_lost` (reason `stream stopped` or `default output changed`)
+    and `device_opened` (device, gap in ms, attempts).
+  - The first stream must open (otherwise the session is `failed`); after that a lost device
+    never stops the recording.
 
 ### Test hardware (verified by the user)
 
@@ -234,6 +261,11 @@ The CLI always prints the path in use.
   with stereo headphones or speakers.
 - No surplus correction during continuous playback (see timeline alignment).
 - Anti-standby does not cover the display or a manual sleep.
+- A hiccup whose burst of delayed packets is split across two drains can still insert up to
+  the hiccup's length of silence, shifting the audio after it by that much until the next
+  pause. Not seen so far (longest gap between packets during playback: 12-19 ms).
+- `gap_ms` can undercount by up to ~0.5 s per switch if a loss is noticed more than 0.5 s after
+  the last packet: silence already written as ordinary silence cannot be relabelled.
 
 ## Unverified assumptions (check during capture work)
 
@@ -245,6 +277,11 @@ The CLI always prints the path in use.
   (probably driver dependent).
 - DRM-protected content might be captured as silence (unlikely for course platforms).
 - That NTFS mtime after a kill matches the last write (used for `ended_at` and the ±1 s check).
+- That the eMultimedia default (what PortAudio opens) always equals the default shown in the
+  sound settings. Windows sets the console and multimedia roles together, so it should.
+- What `time.perf_counter` does across a system sleep. If it keeps counting, a recording that
+  survives a manual sleep gets the whole sleep as silence on wake (8 h would be ~900 MB of
+  silent segments). A cap on single fills may be needed; to decide.
 
 ## Findings so far
 
@@ -265,17 +302,31 @@ The CLI always prints the path in use.
     rules out drift above a few hundred ppm; measure it in the long test.
   - Ctrl+C: clean stop, exit code 0, no traceback from the child.
 - PortAudio re-init + open + close of the loopback: 25-65 ms.
+- Segments piece, tests by the user (2026-10-28):
+  - 150 s with a video playing continuously: segments of 60 + 60 + 29.76 s, file durations
+    equal to the manifest, `missing` between 0.01 and 0.04 s throughout, 0.00 at the end.
+  - Ctrl+C at ~90 s: clean stop, exit code 0, segments consistent with the manifest. The
+    video started ~1.1 s after the recording, so without silence filling the whole timeline
+    was shifted by 1.1 s; this led to the "fill from t0" rule above.
+- Silence filling piece: `DefaultOutputMonitor` returns the Realtek endpoint ID on the test PC.
+  A 12 s session with nothing playing produced one 11.77 s segment of silence for 11.77 s of
+  wall time (before silence filling the same test produced no segment at all).
 
 ## Tests
 
 - Unit (pytest, no audio hardware): downmix/resample (length, 1 kHz FFT peak preserved,
-  int16 clipping); aligner with a fake clock (sub-threshold jitter, pauses, resume, device-switch
-  gaps, 10 simulated minutes with random pauses staying within 150 ms of real time);
+  int16 clipping); aligner with a fake clock (sub-threshold jitter, initial silence before the
+  first packet, pauses, resume, bursts after a hiccup, device-switch gaps, 10 simulated minutes
+  with random pauses staying within 150 ms of real time); capture loop on a fake clock (initial
+  silence, pause, device vanishing, default output changing, failed reopens, stop during an
+  outage, COM failures);
   segmentation (boundaries, contiguity, gap_ms split across two segments); WAV header repair
   (odd trailing byte, foreign header rejected); migrations (idempotence, rollback, status
   CHECK); recovery on a fake session.
-- Manual, interactive script: walks through the checklist (video paused mid-way, headphones
-  unplugged and replugged in both directions, `powercfg /requests`, process kill), timestamps
+- Manual, interactive script: walks through the checklist (recording started a few seconds
+  before pressing play, so the first segment must start at the start of the recording; video
+  paused mid-way; headphones unplugged and replugged in both directions; `powercfg /requests`;
+  process kill), timestamps
   each step, then after `recover` checks total segment duration vs real time (±1 s),
   contiguity, header consistency, and that the silence→speech transition falls near the moment
   the video was resumed (alignment proof).
