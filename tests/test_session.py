@@ -61,6 +61,32 @@ def test_new_session_creates_folder_row_and_course(db, data_dir: Path) -> None:
     assert db.execute("SELECT COUNT(*) FROM courses").fetchone()[0] == 1
 
 
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("Èlite", "èlite"),  # non-ASCII case: COLLATE NOCASE would treat these as different
+        ("Èlite", "Èlite"),  # composed vs combining accent
+        ("Straße", "STRASSE"),  # full case folding
+        ("  Calculus 1 ", "calculus 1"),
+    ],
+)
+def test_course_key_matches_equivalent_titles(a: str, b: str) -> None:
+    assert repo.course_key(a) == repo.course_key(b)
+
+
+def test_course_key_keeps_different_titles_apart() -> None:
+    assert repo.course_key("Èlite") != repo.course_key("Elite")
+    assert repo.course_key("Calculus 1") != repo.course_key("Calculus 2")
+
+
+def test_course_is_reused_whatever_case_and_accent_encoding(db) -> None:
+    first = repo.get_or_create_course(db, "Èlite Analysis")
+    assert repo.get_or_create_course(db, "èlite analysis") == first
+    assert repo.get_or_create_course(db, "ÈLITE ANALYSIS") == first
+    row = db.execute("SELECT title, title_key FROM courses").fetchone()
+    assert (row["title"], row["title_key"]) == ("Èlite Analysis", "èlite analysis")
+
+
 def test_new_session_without_course(db, data_dir: Path) -> None:
     sid = new_session(db, data_dir, None)
     assert repo.get_session(db, sid)["course_id"] is None

@@ -64,10 +64,13 @@ def test_session_status_is_checked(db) -> None:
         db.execute(insert, ("id-bad", "paused"))
 
 
-def test_course_titles_are_unique_ignoring_case(db) -> None:
-    db.execute("INSERT INTO courses (title, created_at) VALUES ('Machine Learning', 'x')")
+def test_course_title_key_is_unique_and_required(db) -> None:
+    insert = "INSERT INTO courses (title, title_key, created_at) VALUES (?, ?, 'x')"
+    db.execute(insert, ("Machine Learning", "machine learning"))
     with pytest.raises(sqlite3.IntegrityError):
-        db.execute("INSERT INTO courses (title, created_at) VALUES ('machine learning', 'x')")
+        db.execute(insert, ("MACHINE LEARNING", "machine learning"))
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(insert, ("No key", None))
 
 
 def test_foreign_keys_are_enforced(db) -> None:

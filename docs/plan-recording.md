@@ -157,11 +157,12 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
 CREATE TABLE courses (
   id          INTEGER PRIMARY KEY,
   title       TEXT NOT NULL,
+  title_key   TEXT NOT NULL,        -- NFC + casefold + NFC of the title, computed in Python
   platform    TEXT,
   url         TEXT,
   created_at  TEXT NOT NULL
 );
-CREATE UNIQUE INDEX idx_courses_title ON courses(title COLLATE NOCASE);
+CREATE UNIQUE INDEX idx_courses_title_key ON courses(title_key);
 
 CREATE TABLE sessions (
   id          TEXT PRIMARY KEY,     -- e.g. 20261028-142301-3f9a2c
@@ -196,8 +197,11 @@ Agreed deviations from the original design notes:
 - `status` also allows `recorded` (recorded, not yet transcribed).
 - `courses` already exists in v1: `--course` needs somewhere to store the course, and
   `course_id` references it. With foreign keys on, a non-null `course_id` pointing to a missing
-  table makes the insert fail. The unique case-insensitive index on the title lets
-  `--course "Calculus 1"` reuse the existing course instead of creating a duplicate.
+  table makes the insert fail. The unique index on `title_key` lets `--course "Calculus 1"`
+  reuse the existing course instead of creating a duplicate. The key is computed in Python
+  (Unicode NFC, case folding, NFC again) because SQLite's `COLLATE NOCASE` folds ASCII letters
+  only: "Èlite" and "èlite" would have become two courses. Changed directly in v1, which had
+  not been used yet.
 - Session IDs are readable and sortable: `YYYYMMDD-HHMMSS-xxxxxx` (6 random hex digits).
 
 ## Recovery

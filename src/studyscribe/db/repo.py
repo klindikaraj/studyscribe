@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone
 
 
@@ -17,15 +18,26 @@ def new_session_id(now: datetime | None = None) -> str:
     return f"{now:%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
 
 
+def course_key(title: str) -> str:
+    """Key that makes course titles unique: "Èlite", "èlite" and "Èlite" typed with a combining
+    accent are one course.
+
+    NFC first, so composed and decomposed accents match; then case folding (which also maps
+    "ß" to "ss"); then NFC again, because case folding can leave decomposed characters.
+    """
+    folded = unicodedata.normalize("NFC", title.strip()).casefold()
+    return unicodedata.normalize("NFC", folded)
+
+
 def get_or_create_course(conn: sqlite3.Connection, title: str) -> int:
-    title = title.strip()
-    row = conn.execute(
-        "SELECT id FROM courses WHERE title = ? COLLATE NOCASE", (title,)
-    ).fetchone()
+    title = unicodedata.normalize("NFC", title.strip())
+    key = course_key(title)
+    row = conn.execute("SELECT id FROM courses WHERE title_key = ?", (key,)).fetchone()
     if row is not None:
         return row["id"]
     cursor = conn.execute(
-        "INSERT INTO courses (title, created_at) VALUES (?, ?)", (title, utc_now_iso())
+        "INSERT INTO courses (title, title_key, created_at) VALUES (?, ?, ?)",
+        (title, key, utc_now_iso()),
     )
     return cursor.lastrowid
 

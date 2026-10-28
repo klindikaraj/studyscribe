@@ -14,13 +14,15 @@ V1 = [
     CREATE TABLE courses (
       id          INTEGER PRIMARY KEY,
       title       TEXT NOT NULL,
+      title_key   TEXT NOT NULL,
       platform    TEXT,
       url         TEXT,
       created_at  TEXT NOT NULL
     )
     """,
-    # Lets `--course` reuse an existing course whatever the case (ASCII letters only).
-    "CREATE UNIQUE INDEX idx_courses_title ON courses(title COLLATE NOCASE)",
+    # title_key is computed in Python (repo.course_key: Unicode NFC + case folding), so
+    # `--course` reuses an existing course whatever the case or accents' encoding.
+    "CREATE UNIQUE INDEX idx_courses_title_key ON courses(title_key)",
     """
     CREATE TABLE sessions (
       id          TEXT PRIMARY KEY,
