@@ -52,9 +52,17 @@ class AudioSource(Protocol):
 
 
 class Sink(Protocol):
-    def write(self, pcm: np.ndarray) -> None: ...
+    def start(self, emit: Emit) -> None:
+        """Called once when the timeline starts, before the first write."""
+        ...
 
-    def close(self) -> None: ...
+    def write(self, pcm: np.ndarray, gap: bool = False) -> None:
+        """Append samples to the timeline; `gap=True` marks them as synthetic."""
+        ...
+
+    def close(self, reason: str) -> None:
+        """Always called, even if start() was not. reason: requested, parent_exited, error."""
+        ...
 
 
 class LoopbackSource:
@@ -193,6 +201,7 @@ def run_capture(
     """
     sink = config.sink_factory()
     source = config.source_factory()
+    reason = "error"
     try:
         source.open()
         resampler = StreamingResampler(source.rate, SAMPLE_RATE)
@@ -204,6 +213,7 @@ def run_capture(
             channels=source.channels,
         )
         t0 = clock()
+        sink.start(emit)
         stats = _PacketStats(t0)
         meter = LevelMeter()
         written = 0
@@ -217,7 +227,7 @@ def run_capture(
                 meter.add(pcm)
                 written += pcm.size
 
-        while (reason := should_stop()) is None:
+        while (stop_reason := should_stop()) is None:
             for arrival, data, status in source.drain():
                 stats.on_packet(arrival, status)
                 write(_to_pcm16(data, source.channels, resampler))
@@ -248,6 +258,7 @@ def run_capture(
             stats.on_packet(arrival, status)
             write(_to_pcm16(data, source.channels, resampler))
         write(float_to_int16(resampler.flush()))
+        reason = stop_reason
         emit(
             "stopped",
             reason=reason,
@@ -259,7 +270,7 @@ def run_capture(
     finally:
         for problem in source.close():
             emit("warning", message=f"closing the audio stream: {problem}")
-        sink.close()
+        sink.close(reason)
 
 
 class QueueEmitter:

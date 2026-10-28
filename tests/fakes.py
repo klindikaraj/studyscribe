@@ -63,13 +63,21 @@ class ListSink:
 
     def __init__(self) -> None:
         self.chunks: list[np.ndarray] = []
-        self.closed = False
+        self.started = False
+        self.close_reason: str | None = None
 
-    def write(self, pcm: np.ndarray) -> None:
+    def start(self, emit) -> None:
+        self.started = True
+
+    def write(self, pcm: np.ndarray, gap: bool = False) -> None:
         self.chunks.append(pcm.copy())
 
-    def close(self) -> None:
-        self.closed = True
+    def close(self, reason: str) -> None:
+        self.close_reason = reason
+
+    @property
+    def closed(self) -> bool:
+        return self.close_reason is not None
 
     @property
     def samples(self) -> np.ndarray:
@@ -82,11 +90,27 @@ class RawFileSink:
     def __init__(self, path: str) -> None:
         self._file = Path(path).open("ab")
 
-    def write(self, pcm: np.ndarray) -> None:
+    def start(self, emit) -> None:
+        pass
+
+    def write(self, pcm: np.ndarray, gap: bool = False) -> None:
         self._file.write(pcm.tobytes())
 
-    def close(self) -> None:
+    def close(self, reason: str) -> None:
         self._file.close()
+
+
+def wait_for(handle, kind: str, timeout: float = 20.0) -> list[dict]:
+    """Read a RecorderHandle's events until one of type `kind` arrives; return all seen."""
+    seen: list[dict] = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        seen += handle.events(timeout=0.2)
+        if any(e["type"] == kind for e in seen):
+            return seen
+        if not handle.is_alive():
+            break
+    raise AssertionError(f"no {kind!r} event; got {[e['type'] for e in seen]}")
 
 
 class FakeClock:

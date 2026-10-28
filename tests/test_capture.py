@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fakes import FakeClock, FakeSource, ListSink, RawFileSink
+from fakes import FakeClock, FakeSource, ListSink, RawFileSink, wait_for
 
 from studyscribe.audio.capture import CaptureConfig, run_capture
 from studyscribe.recording import RecorderHandle
@@ -46,7 +46,8 @@ def test_one_second_of_48k_stereo_becomes_16000_samples() -> None:
     reason, sink, emit = run_fake(source, ticks=20)  # 20 x 50 ms = 1 s
     assert reason == "requested"
     assert len(sink.samples) == 16_000
-    assert sink.closed and source.close_calls >= 1
+    assert sink.started and sink.close_reason == "requested"
+    assert source.close_calls >= 1
     stopped = emit.of_type("stopped")[-1]
     assert stopped["audio_s"] == pytest.approx(1.0)
     assert stopped["reason"] == "requested"
@@ -84,23 +85,11 @@ def test_open_failure_closes_everything_and_propagates() -> None:
     config = CaptureConfig(sink_factory=lambda: sink, source_factory=lambda: source)
     with pytest.raises(OSError, match="fake device unavailable"):
         run_capture(config, stop_after(5), Recorder(), clock=FakeClock(), sleep=lambda s: None)
-    assert sink.closed
+    assert sink.close_reason == "error" and not sink.started
     assert source.close_calls == 1
 
 
 # --- separate process --------------------------------------------------------------------
-
-
-def wait_for(handle: RecorderHandle, kind: str, timeout: float = 20.0) -> list[dict]:
-    seen: list[dict] = []
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        seen += handle.events(timeout=0.2)
-        if any(e["type"] == kind for e in seen):
-            return seen
-        if not handle.is_alive():
-            break
-    raise AssertionError(f"no {kind!r} event; got {[e['type'] for e in seen]}")
 
 
 def test_capture_process_starts_writes_and_stops_cleanly(tmp_path: Path) -> None:

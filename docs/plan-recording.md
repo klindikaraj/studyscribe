@@ -98,7 +98,16 @@ Steps 2-6 add `transcribe/`, `notes/`, `api/` next to these without changing the
   at (N-1)·60000 ms. Files: `<data>/sessions/<session_id>/audio/000001.wav …`.
 - Unbuffered writes (every tick reaches the OS), header patched every second, fsync every
   10 s. Maximum loss on a process kill: about one tick (< 100 ms).
-- A row is inserted in `audio_segments` when a segment closes.
+- A row is inserted in `audio_segments` when a segment closes, with the path relative to the
+  session folder (`audio/000001.wav`) so the data directory can be moved.
+- Files are created on their first sample (no empty segments) and never overwritten.
+- A database error never stops the recording: the capture process reports a warning and keeps
+  writing audio; recovery registers the missing rows later. This includes failing to open the
+  database at all.
+- The parent creates the session row (`recording`, provisional `started_at`) and runs the
+  migrations; the capture process only connects, sets `started_at` at timeline t0 and sets the
+  final status: `recorded` (stop requested), `interrupted` (parent died or error after some
+  audio), `failed` (error before any audio).
 
 ## Device changes
 

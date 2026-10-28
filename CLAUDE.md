@@ -26,7 +26,7 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1, capture piece done (next: segments and manifest).
+Current state: step 1, segments and manifest done (next: silence filling and device changes).
 
 ## Architecture principles
 
@@ -70,16 +70,22 @@ src/studyscribe/
   cli.py              command-line entry point (`studyscribe`, `python -m studyscribe`)
   config.py           data directory resolution and shared settings
   recording.py        RecorderHandle: parent side of the capture process (start/events/stop)
+  session.py          new_session (parent) and SessionSink (capture process: segments + manifest)
   audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
   audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop, capture_main
+  audio/wav.py        WavWriter: unbuffered, header patched every 1 s, fsync every 10 s
+  audio/segments.py   SegmentWriter: exact 60 s segments, gap frames per segment
+  db/connection.py    connect (no migration), open_database (migrates), transaction
+  db/migrations.py    MIGRATIONS list, PRAGMA user_version
+  db/repo.py          queries on courses, sessions, audio_segments
   system/power.py     keep_system_awake (SetThreadExecutionState)
-tests/                pytest, no audio hardware required; tests/fakes.py holds the fakes
-scripts/capture_probe.py   records the loopback to one WAV and prints packet/stream stats
+tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
+scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, or --session "Title"
 ```
 
-Still planned for step 1: `recovery.py`, `db/` (connection, migrations, repo),
-`audio/` (timeline, wav, segments, devices), `system/locks.py`,
-`scripts/manual_recording_test.py`, `docs/manual-test-recording.md`.
+Still planned for step 1: `recovery.py`, `audio/timeline.py`, `audio/devices.py`,
+`system/locks.py`, CLI subcommands, `scripts/manual_recording_test.py`,
+`docs/manual-test-recording.md`.
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
 top-level classes/functions or `functools.partial` of them, never lambdas.

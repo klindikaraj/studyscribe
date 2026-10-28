@@ -12,6 +12,21 @@ DATA_DIR_ENV = "STUDYSCRIBE_DATA_DIR"
 # Internal audio format: PCM int16, mono, 16 kHz (the native input format of Whisper).
 SAMPLE_RATE = 16_000
 
+# Every segment holds exactly this many samples, so segment N starts at (N - 1) * 60 s.
+SEGMENT_SECONDS = 60
+SEGMENT_FRAMES = SAMPLE_RATE * SEGMENT_SECONDS
+
+DB_FILENAME = "app.db"
+AUDIO_SUBDIR = "audio"
+
+
+def db_path(data_dir: Path) -> Path:
+    return data_dir / DB_FILENAME
+
+
+def session_dir(data_dir: Path, session_id: str) -> Path:
+    return data_dir / "sessions" / session_id
+
 
 def default_data_dir(environ: Mapping[str, str] | None = None) -> Path:
     """%LOCALAPPDATA%\\StudyScribe, independent of the working directory."""
