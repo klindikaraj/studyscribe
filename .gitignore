@@ -1,0 +1,34 @@
+# App data (sessions, database, audio)
+data/
+
+# Secrets
+.env
+.env.*
+
+# Audio files
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.opus
+
+# Virtual environments
+.venv/
+venv/
+
+# Python caches and build output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Personal Claude Code files
+CLAUDE.local.md
+.claude/settings.local.json
