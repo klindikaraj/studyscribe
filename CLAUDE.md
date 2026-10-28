@@ -40,6 +40,8 @@ Current state: step 1, setup done.
 
 ## Step 1 design (recording)
 
+Full agreed plan, including test hardware and open assumptions: `docs/plan-recording.md`.
+
 - WASAPI loopback of the default output via PyAudioWPatch in callback mode; the callback only
   queues `(perf_counter(), bytes)`. Downmix to mono, resample with `soxr.ResampleStream`, int16.
 - Segments hold exactly 60 s of samples, so segment N starts at (N-1)·60000 ms:
