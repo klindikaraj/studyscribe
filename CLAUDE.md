@@ -26,7 +26,7 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1, recovery done (next: CLI subcommands).
+Current state: step 1, CLI done (next: manual checklist and verification script).
 
 ## Architecture principles
 
@@ -70,7 +70,8 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
   `interrupted` (`failed` without audio), `ended_at` = mtime of the last segment. If only the
   capture process dies, the owner recovers its own session (`owner_lock=`).
 - Deviations from the original schema: `sessions.status` also allows `recorded` (recorded, not
-  yet transcribed); `courses` exists from migration v1 (unique title, case-insensitive);
+  yet transcribed); `courses` exists from migration v1 (unique `title_key`: NFC + casefold of
+  the title, computed in Python);
   session IDs look like `20261028-142301-3f9a2c` (sortable, readable).
 - Migrations: Python list applied in order, tracked with `PRAGMA user_version`, one transaction each.
 
@@ -78,7 +79,8 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
 
 ```
 src/studyscribe/
-  cli.py              command-line entry point (`studyscribe`, `python -m studyscribe`)
+  cli.py              `studyscribe record|sessions|recover` (also `python -m studyscribe`):
+                      live status line, recovery first, owner recovery if the capture dies
   config.py           data directory resolution and shared settings
   recording.py        RecorderHandle: parent side of the capture process (start/events/stop/kill)
   session.py          new_session (parent, owner lock) and SessionSink (capture process: capture
@@ -102,8 +104,7 @@ scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --sessio
                            --recover, --silence-limit SECONDS
 ```
 
-Still planned for step 1: CLI subcommands, `scripts/manual_recording_test.py`,
-`docs/manual-test-recording.md`.
+Still planned for step 1: `scripts/manual_recording_test.py`, `docs/manual-test-recording.md`.
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
 top-level classes/functions or `functools.partial` of them, never lambdas. Tests always pass a
@@ -130,8 +131,11 @@ py -3.12 -m venv .venv                          # create the venv
 .venv\Scripts\python -m pip install -e ".[dev]" # install (ask first)
 .venv\Scripts\python -m pytest                  # run tests
 .venv\Scripts\studyscribe --help                # CLI
+.venv\Scripts\studyscribe record --title "Lecture 3" --course "Calculus"   # Ctrl+C to stop
+.venv\Scripts\studyscribe sessions               # list (recovers abandoned sessions first)
+.venv\Scripts\studyscribe recover                # recovery on demand
 .venv\Scripts\python scripts\capture_probe.py --seconds 60   # real-hardware capture probe
-.venv\Scripts\python scripts\capture_probe.py --recover      # recover abandoned sessions
+.venv\Scripts\python scripts\capture_probe.py --recover      # same recovery, from the probe
 ```
 
 ## Working rules

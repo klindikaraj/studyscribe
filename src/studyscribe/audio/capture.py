@@ -385,10 +385,12 @@ def run_capture(
             timeline.idle(now)
             if timeline.limit_reached:
                 stop_reason = "silence_limit"
-                message = (
-                    f"no sound for {_duration(config.silence_limit_s or 0)} (last at "
-                    f"t={timeline.last_sound - t0:.1f} s): recording stopped automatically"
-                )
+                limit = _duration(config.silence_limit_s or 0)
+                if timeline.last_sound > t0:
+                    since = f"for {limit} (last at t={timeline.last_sound - t0:.1f} s)"
+                else:
+                    since = f"since the start ({limit} limit)"
+                message = f"no sound {since}: recording stopped automatically"
                 if clock_jump > 60:
                     message += f"; the clock jumped {_duration(clock_jump)} at once (sleep?)"
                 emit("warning", message=message)

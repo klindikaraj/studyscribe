@@ -35,6 +35,20 @@ py -3.12 -m venv .venv
 Data is stored in `%LOCALAPPDATA%\StudyScribe` by default; override it with
 `--data-dir` or the `STUDYSCRIBE_DATA_DIR` environment variable.
 
+## Usage
+
+```powershell
+.venv\Scripts\studyscribe record --title "Lecture 3" --course "Calculus"   # Ctrl+C to stop
+.venv\Scripts\studyscribe sessions    # list sessions with status and duration
+.venv\Scripts\studyscribe recover     # repair sessions left behind by a crash
+```
+
+`record` captures whatever the default output plays, follows headphones being
+unplugged or replugged, and stops by itself after 30 minutes without sound
+(`--silence-limit MINUTES`, 0 = never). Audio is written as 60-second WAV
+segments, so a crash loses at most a fraction of a second; abandoned sessions
+are repaired automatically the next time `record` or `sessions` runs.
+
 ## A note on use
 
 Record only content you are allowed to record, and keep recordings of paid

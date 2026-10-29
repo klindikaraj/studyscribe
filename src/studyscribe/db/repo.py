@@ -89,6 +89,28 @@ def get_session(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None
     return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
 
 
+_SUMMARY = """
+    SELECT s.id, s.title, s.status, s.started_at, s.ended_at, c.title AS course,
+           COUNT(a.seq) AS segments,
+           COALESCE(MAX(a.end_ms), 0) AS duration_ms,
+           COALESCE(SUM(a.gap_ms), 0) AS gap_ms
+    FROM sessions s
+    LEFT JOIN courses c ON c.id = s.course_id
+    LEFT JOIN audio_segments a ON a.session_id = s.id
+"""
+
+
+def list_session_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every session with its course title and, from the manifest, segments/duration/gap."""
+    return conn.execute(_SUMMARY + " GROUP BY s.id ORDER BY s.id").fetchall()
+
+
+def get_session_summary(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        _SUMMARY + " WHERE s.id = ? GROUP BY s.id", (session_id,)
+    ).fetchone()
+
+
 def list_audio_segments(conn: sqlite3.Connection, session_id: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM audio_segments WHERE session_id = ? ORDER BY seq", (session_id,)

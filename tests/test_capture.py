@@ -294,9 +294,20 @@ def test_recording_stops_by_itself_after_the_silence_limit() -> None:
     assert sink.close_reason == "silence_limit"
     assert len(sink.samples) == 6 * 16_000  # last sound at 1.0 s + 5 s
     [warning] = emit.of_type("warning")
-    assert "no sound for" in warning["message"] and "jumped" not in warning["message"]
+    assert "no sound for 5 s (last at t=1.0 s)" in warning["message"]
+    assert "jumped" not in warning["message"]
     assert emit.of_type("stopped")[-1]["reason"] == "silence_limit"
     assert source.close_calls >= 1
+
+
+def test_silence_limit_warning_when_nothing_ever_played() -> None:
+    clock = FakeClock()
+    source = ClockedSource(clock, silent=[(1000.0, math.inf)])
+    reason, sink, emit = run_with_limit(clock, source, stop_after(1000), limit_s=2.0)
+    assert reason == "silence_limit"
+    [warning] = emit.of_type("warning")
+    assert "no sound since the start (2 s limit)" in warning["message"]
+    assert len(sink.samples) == 2 * 16_000
 
 
 def test_clock_jump_after_sleep_fills_only_up_to_the_limit() -> None:

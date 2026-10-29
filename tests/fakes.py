@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -92,6 +93,22 @@ class ListSink:
         loud = np.abs(self.samples.astype(np.int32)) > threshold
         edges = np.flatnonzero(loud[1:] & ~loud[:-1]) + 1
         return ([0] if loud.size and loud[0] else []) + edges.tolist()
+
+
+class DyingSource(FakeSource):
+    """FakeSource whose process dies on the spot after `die_after` drains: no finally, no
+    cleanup, like a process killed from Task Manager."""
+
+    def __init__(self, die_after: int = 20, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.die_after = die_after
+        self._drains = 0
+
+    def drain(self) -> list[tuple[float, bytes, int]]:
+        self._drains += 1
+        if self._drains > self.die_after:
+            os._exit(1)
+        return super().drain()
 
 
 class RawFileSink:

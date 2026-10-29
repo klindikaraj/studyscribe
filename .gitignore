@@ -32,3 +32,6 @@ htmlcov/
 # Personal Claude Code files
 CLAUDE.local.md
 .claude/settings.local.json
+
+# Local agent notes, not part of the repo
+AGENTS.md

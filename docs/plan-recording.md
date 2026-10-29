@@ -16,7 +16,7 @@ kill loses at most a few seconds and the timeline stays aligned.
 3. Segments and manifest: 60 s WAV segments, SQLite schema v1 and migrations (done)
 4. Silence filling and device changes (done)
 5. Recovery (done)
-6. CLI: `record`, `sessions`, `recover`
+6. CLI: `record`, `sessions`, `recover` (done)
 7. Tests: remaining unit tests, manual checklist and verification script
 
 ## Dependencies
@@ -276,13 +276,25 @@ Agreed deviations from the original design notes:
 - Known loss: the `gap_ms` of a segment added by recovery is 0, since rows are written when a
   segment closes and only the capture process knew its gap.
 
-## CLI
+## CLI (`cli.py`)
 
-- `record --title "..." [--course "..."]`: start recording, show level and elapsed time on one
-  line, Ctrl+C stops cleanly.
-- `sessions`: list sessions with status and duration.
-- `recover`: run recovery manually.
-- Standard library only (argparse, `\r` status line).
+- Every command prints the data directory first.
+- `record --title "..." [--course "..."] [--silence-limit MINUTES]`: recovers abandoned
+  sessions, creates the session (holding the owner lock), prints session ID, folder, the
+  silence limit and both PIDs, then starts the capture process. On a terminal one live line is
+  redrawn with `\r`: elapsed time, level bar (-60 to 0 dBFS), current segment, gap; events
+  (device lost/reopened, warnings, errors, stop) are printed on their own timestamped lines
+  above it. When output is not a terminal only the events are printed.
+- Ctrl+C asks the capture process to stop and waits for it (a second Ctrl+C keeps waiting).
+  If the capture process exits abnormally, the CLI recovers the session itself as its owner.
+  Exit code 0 only if the session ends `recorded` (Ctrl+C or silence limit).
+- `--silence-limit` is in minutes (default 30); 0 disables the auto-stop.
+- `sessions`: recovers first, then one row per session: ID, status, local start time, duration
+  and gap (from the manifest), course, title. A session still recording shows the duration of
+  its closed segments.
+- `recover`: recovery on demand, one line per repaired session plus its problems.
+- Standard library only (argparse, `\r` status line). Output that cannot be encoded (redirected
+  to a file with the ANSI code page) is escaped instead of crashing.
 
 ## Data directory
 
@@ -367,6 +379,12 @@ The CLI always prints the path in use.
     device handling.
 - Silence limit: with `--silence-limit 3` and nothing playing, the probe stopped by itself
   after 3.0 s of timeline, status `recorded`.
+- Recovery piece, tests by the user (2026-10-29), video playing:
+  - `taskkill /F` on the capture process at ~90 s: the probe recovered the session itself:
+    `interrupted`, 90.251 s, segment 2 repaired and added, child exit code 1.
+  - `taskkill /F /T` on the probe at ~65 s (both processes; the probe's own parent was the venv
+    launcher), then `--recover`: `interrupted`, 65.387 s; a second `--recover`: nothing to do.
+  - `--silence-limit 20` with nothing playing: stopped by itself at 20.0 s, `recorded`, warning.
 - Recovery piece, on the test PC (nothing playing, so the timeline was silence):
   - `taskkill /F` on the capture process after ~4 s: the probe (owner) recovered the session:
     `interrupted`, one segment of 3.972 s, header repaired; `ended_at - started_at` = 4.07 s
