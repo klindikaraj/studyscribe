@@ -17,7 +17,8 @@ kill loses at most a few seconds and the timeline stays aligned.
 4. Silence filling and device changes (done)
 5. Recovery (done)
 6. CLI: `record`, `sessions`, `recover` (done)
-7. Tests: remaining unit tests, manual checklist and verification script
+7. Tests: remaining unit tests, manual checklist and verification script (done; the 3 h
+   acceptance test is in `docs/manual-test-recording.md`, section C)
 
 ## Dependencies
 
@@ -379,6 +380,14 @@ The CLI always prints the path in use.
     device handling.
 - Silence limit: with `--silence-limit 3` and nothing playing, the probe stopped by itself
   after 3.0 s of timeline, status `recorded`.
+- CLI piece, tests by the user (2026-10-29): live status line; unplug/replug reported (gaps
+  136 ms and 487 ms, summary "gap 0.6 s"); Ctrl+C -> `recorded`, exit 0; `sessions` correct,
+  "Èlite" shown right and reused for "èlite"; kill of the capture process -> recovered
+  `interrupted`, exit 1; kill of both -> recovery printed before the `sessions` table.
+- Manual test script, driven by a script on the test PC with nothing playing (Enter sent
+  automatically, `taskkill /F` on the capture process at 3:10): recovered `interrupted`, 4
+  segments, duration -0.24 s from real time, `ended_at` -0.14 s from the kill; the sound and
+  switch checks failed as they should without audio or device changes.
 - Recovery piece, tests by the user (2026-10-29), video playing:
   - `taskkill /F` on the capture process at ~90 s: the probe recovered the session itself:
     `interrupted`, 90.251 s, segment 2 repaired and added, child exit code 1.
@@ -411,10 +420,13 @@ The CLI always prints the path in use.
   segmentation (boundaries, contiguity, gap_ms split across two segments); WAV header repair
   (odd trailing byte, foreign header rejected); migrations (idempotence, rollback, status
   CHECK); recovery on a fake session.
-- Manual, interactive script: walks through the checklist (recording started a few seconds
-  before pressing play, so the first segment must start at the start of the recording; video
-  paused mid-way; headphones unplugged and replugged in both directions; `powercfg /requests`;
-  process kill), timestamps
-  each step, then after `recover` checks total segment duration vs real time (±1 s),
-  contiguity, header consistency, and that the silence→speech transition falls near the moment
-  the video was resumed (alignment proof).
+- Manual: `docs/manual-test-recording.md` and `scripts/manual_recording_test.py`. The guided
+  run (about 4 minutes) records a session and prompts each step at a suggested time: play 5 s
+  after the start (initial silence), pause and resume, unplug and replug the headphones,
+  `powercfg /requests` (answered by the user), then a kill of the capture process from Task
+  Manager in segment 4 (so both switches fall in closed segments). It saves the marks in the
+  session folder as it goes, recovers the session as its owner and checks: status, manifest vs
+  files (`verify.py`), duration vs real time (±1 s), `ended_at` vs the kill (±1 s), first sound
+  vs play, last sound vs pause, first sound vs resume (±1 s each, from 50 ms RMS levels above
+  -50 dBFS), both switches reported within 5 s, manifest gap vs reported gaps. `--check <id>`
+  runs recovery and the checks on any session, with the marks if they were saved.

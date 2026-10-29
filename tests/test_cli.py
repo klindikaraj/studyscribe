@@ -143,7 +143,21 @@ def test_status_line_prints_only_events_when_not_a_terminal() -> None:
     lines = out.getvalue().splitlines()
     assert "\r" not in out.getvalue()
     assert lines[1].endswith("Device lost (stream stopped): Speakers")
-    assert lines[2].endswith("Recording from Monitor again, gap 174 ms")
+    assert lines[2].endswith("Switched to Monitor, gap 174 ms")
+
+
+def test_device_messages_say_again_only_for_the_same_device() -> None:
+    out = io.StringIO()
+    status = cli.StatusLine(out)
+    opened = {"type": "device_opened", "rate": 48_000, "channels": 2, "attempts": 1}
+    status.show({"type": "started", "device": "Speakers", "rate": 48_000, "channels": 2})
+    status.show({**opened, "device": "Monitor", "gap_ms": 174})  # unplugged
+    status.show({**opened, "device": "Speakers", "gap_ms": 487})  # replugged: back, but a switch
+    status.show({**opened, "device": "Speakers", "gap_ms": 40, "attempts": 3})  # same device
+    lines = out.getvalue().splitlines()
+    assert lines[1].endswith("Switched to Monitor, gap 174 ms")
+    assert lines[2].endswith("Switched to Speakers, gap 487 ms")
+    assert lines[3].endswith("Recording from Speakers again, gap 40 ms after 3 attempts")
 
 
 # --- formatting ------------------------------------------------------------------------------

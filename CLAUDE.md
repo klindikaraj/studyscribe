@@ -26,7 +26,8 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1, CLI done (next: manual checklist and verification script).
+Current state: step 1 implemented; its acceptance test (`docs/manual-test-recording.md`,
+section C: 3 h recording) is pending. Step 2 starts after it.
 
 ## Architecture principles
 
@@ -86,6 +87,7 @@ src/studyscribe/
   session.py          new_session (parent, owner lock) and SessionSink (capture process: capture
                       lock, segments + manifest)
   recovery.py         recover_all / recover_session: repair abandoned sessions
+  verify.py           checks on a recorded session: manifest vs files, where the sound is
   audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
   audio/timeline.py   TimelineAligner: packets -> gap-free timeline aligned to the clock (pure)
   audio/devices.py    DefaultOutputMonitor: default output endpoint ID through COM (ctypes)
@@ -102,9 +104,10 @@ src/studyscribe/
 tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
 scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --session "Title",
                            --recover, --silence-limit SECONDS
+scripts/manual_recording_test.py   guided manual test (play/pause/unplug/replug/kill + checks),
+                           --check SESSION_ID for any session
+docs/manual-test-recording.md      manual checklist, including the 3 h acceptance test
 ```
-
-Still planned for step 1: `scripts/manual_recording_test.py`, `docs/manual-test-recording.md`.
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
 top-level classes/functions or `functools.partial` of them, never lambdas. Tests always pass a
@@ -136,6 +139,7 @@ py -3.12 -m venv .venv                          # create the venv
 .venv\Scripts\studyscribe recover                # recovery on demand
 .venv\Scripts\python scripts\capture_probe.py --seconds 60   # real-hardware capture probe
 .venv\Scripts\python scripts\capture_probe.py --recover      # same recovery, from the probe
+.venv\Scripts\python scripts\manual_recording_test.py         # guided manual test (~4 min)
 ```
 
 ## Working rules

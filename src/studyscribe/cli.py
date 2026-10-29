@@ -201,11 +201,17 @@ class StatusLine:
     """Shows capture events: messages on their own lines, plus (on a terminal) one live line
     with elapsed time, level and current segment, redrawn in place."""
 
-    def __init__(self, out: TextIO, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        out: TextIO,
+        clock: Callable[[], float] = time.monotonic,
+        live: bool | None = None,
+    ) -> None:
         self._out = out
-        self._live = out.isatty()
+        self._live = out.isatty() if live is None else live
         self._clock = clock
         self._started: float | None = None
+        self._device = ""  # device being recorded (or lost last)
         self._level_db = LEVEL_FLOOR_DB
         self._closed_segments = 0
         self._gap_ms = 0
@@ -215,6 +221,7 @@ class StatusLine:
         kind = event["type"]
         if kind == "started":
             self._started = self._clock()
+            self._device = event["device"]
             self.message(
                 f"Recording from {event['device']}, {event['rate']} Hz, {event['channels']} ch"
             )
@@ -227,8 +234,14 @@ class StatusLine:
         elif kind == "device_lost":
             self.message(f"Device lost ({event['reason']}): {event['device']}")
         elif kind == "device_opened":
+            device = event["device"]
+            what = (
+                f"Recording from {device} again" if device == self._device
+                else f"Switched to {device}"
+            )
+            self._device = device
             self.message(
-                f"Recording from {event['device']} again, gap {event['gap_ms']} ms"
+                f"{what}, gap {event['gap_ms']} ms"
                 + (f" after {event['attempts']} attempts" if event["attempts"] > 1 else "")
             )
         elif kind == "warning":
