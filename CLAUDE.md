@@ -26,8 +26,9 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1 implemented; its acceptance test (`docs/manual-test-recording.md`,
-section C: 3 h recording) is pending. Step 2 starts after it.
+Current state: step 1 done; its acceptance test (`docs/manual-test-recording.md`, section C:
+3 h recording) passed on 2026-10-30, results in `docs/plan-recording.md`. Step 2 is next and
+has no plan yet: plan it first.
 
 ## Architecture principles
 

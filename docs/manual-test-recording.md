@@ -87,7 +87,9 @@ Prepare:
 - About 120 MB of disk per hour (350 MB in all).
 - Nothing that sleeps or restarts the PC: the recording keeps Windows awake, but a manual sleep
   or an update restart would stop it.
-- A data directory of its own: `$d = "$env:TEMP\studyscribe-3h"`.
+- A data directory of its own, outside `%TEMP%` (disk cleanup may empty it; the recording is
+  worth keeping as test material for transcription):
+  `$d = "$env:LOCALAPPDATA\StudyScribe-tests\3h"`.
 
 Run:
 
@@ -96,7 +98,8 @@ Run:
 2. Around 0:30, pause the video for about 5 minutes, then resume it.
 3. Around 1:30, unplug the headphones; a few minutes later plug them back in.
 4. After 3:00:00, end the capture process in Task Manager (Details > the capture PID > End
-   task). The CLI recovers the session: `interrupted`, exit code 1.
+   task). Go by the elapsed time on the status line rather than by the clock. The CLI
+   recovers the session: `interrupted`, exit code 1.
 5. `.venv\Scripts\python scripts\manual_recording_test.py --data-dir $d --check <id>`.
 
 Passes when:
@@ -105,6 +108,9 @@ Passes when:
 - "Duration matches real time" is within ±1 s. Its sign is the device clock drift since the
   last pause (+ means the device clock ran fast: the surplus is absorbed only at pauses);
 - the CLI output shows both device switches with gaps of at most about a second;
+- the manifest gap, shown on the `Device gaps in the manifest` line, matches the sum of the
+  gaps printed by the CLI, ±100 ms per switch. Without a guided run `--check` has no record of
+  the steps, so that line says `reported 0 ms` and the header `play/pause by hand`: ignore both;
 - the minutes around each switch, the pause and the end sound right. To find them: the
   session ID holds the start time (`20261030-131710` started at 13:17:10), so an event
   printed at 14:47:40 is at 1:30:30 on the timeline, i.e. 30 s into segment 91 (`000091.wav`
@@ -112,6 +118,10 @@ Passes when:
 
 For a continuous drift reading, run `scripts\capture_probe.py --session "Drift" --seconds 10800`
 instead and watch `missing` over time.
+
+Result (2026-10-30): passed. Session `20261030-134407-4ba5ed`, killed at 2:57:34; duration
+-0.03 s; gaps 106 and 155 ms (manifest 248 ms); every event heard at its printed time; at most
+about 0.6 s of audio lost, all at the two switches. Details in `docs/plan-recording.md`.
 
 ## D. One-off checks
 

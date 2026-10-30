@@ -2,6 +2,8 @@
 
 Agreed plan for step 1 of the roadmap. Update it when a decision changes.
 
+Step 1 is done: its acceptance test passed on 2026-10-30 (see "Acceptance test" below).
+
 ## Goal
 
 Record the system audio of a lecture for 1-3 hours without losing data, even if the
@@ -18,7 +20,7 @@ kill loses at most a few seconds and the timeline stays aligned.
 5. Recovery (done)
 6. CLI: `record`, `sessions`, `recover` (done)
 7. Tests: remaining unit tests, manual checklist and verification script (done; the 3 h
-   acceptance test is in `docs/manual-test-recording.md`, section C)
+   acceptance test, `docs/manual-test-recording.md` section C, passed)
 
 ## Dependencies
 
@@ -317,6 +319,7 @@ The CLI always prints the path in use.
   new device before the poll notices (up to 0.5 s) is not captured. If the old device keeps
   delivering packets meanwhile, that time is recorded as the old device's (silent) audio, not
   as gap. In the user's test the old device still had sound until the switch was noticed.
+  In the acceptance test the replug left 483 ms of zeros on the timeline against a 151 ms gap.
 - The capture level follows the device volume (loopback is taken after it): the same lecture
   measured about -20 dBFS on the Realtek output and about -40 dBFS on the monitor.
 
@@ -329,11 +332,38 @@ The CLI always prints the path in use.
 - Whether lowering an app's volume lowers the recording, and what a muted master volume does
   (probably driver dependent).
 - DRM-protected content might be captured as silence (unlikely for course platforms).
-- That NTFS mtime after a kill matches the last write (used for `ended_at` and the ±1 s check).
+- (Verified in the guided runs: after a kill, the NTFS mtime of the last segment, used for
+  `ended_at`, was within 0.21 s of the kill.)
 - That the eMultimedia default (what PortAudio opens) always equals the default shown in the
   sound settings. Windows sets the console and multimedia roles together, so it should.
 - What `time.perf_counter` does across a system sleep. If it keeps counting, the jump on wake
   is filled with silence, but only up to the silence limit (see above), so never hours of it.
+
+## Acceptance test (passed 2026-10-30)
+
+Run by the user as in section C of `docs/manual-test-recording.md`: session
+`20261030-134407-4ba5ed`, a lecture playing in the browser, headphones on the Realtek jack.
+
+- Timeline of the run: pause at 0:29:33 for 5 min 11 s; unplug at 1:26:07 (`stream stopped`,
+  switched to the monitor, gap 106 ms); replug at 1:29:28 (`default output changed`, back to
+  Realtek, gap 155 ms); both reopens at the first attempt. Capture process ended from Task
+  Manager at 2:57:34, not after 3:00:00 as planned (a slip in working out the time; accepted).
+  The CLI recovered the session: `interrupted`, 178 segments, exit code 1.
+- `--check`: every check that applies passed. Timeline 10654.79 s against 10654.82 s from
+  start to `ended_at` (-0.03 s, below what `ended_at` resolves: the clock drift over the
+  88 minutes after the last switch is small, not measured). Manifest gap 248 ms (97 + 151)
+  against 261 ms reported (106 + 155): as in every run, the manifest is a few ms below.
+- Alignment: the pause, the resume and both switches are heard at the wall-clock times that
+  the CLI printed and the user noted (e.g. the unplug at 15:10:14 is 7 s into segment 87).
+  Sound reaches the last 50 ms window of the last segment.
+- Audio lost: about 0.6 s in 3 h at most, all at the switches: 124 ms of zeros at the unplug,
+  483 ms at the replug. The replug loss is larger than its gap because audio routed to the
+  headphones before the poll noticed was not captured (see Known limits); part of it may be
+  silence in the video.
+- Short digital silences inside sound: 2, the unplug gap and a 64 ms run of zeros at 2:09:23.
+  The latter is shorter than any silence the timeline inserts (over 100 ms), so it is in the
+  video: none of the timeline's insertions shows up during sound.
+- The recording is kept outside the repo as test material for step 2.
 
 ## Findings so far
 
