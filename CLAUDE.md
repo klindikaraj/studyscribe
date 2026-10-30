@@ -104,8 +104,8 @@ src/studyscribe/
 tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
 scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --session "Title",
                            --recover, --silence-limit SECONDS
-scripts/manual_recording_test.py   guided manual test (play/pause/unplug/replug/kill + checks),
-                           --check SESSION_ID for any session
+scripts/manual_recording_test.py   guided manual test: media key for play/pause/resume (or
+                           --manual), unplug/replug, kill, checks; --check SESSION_ID
 docs/manual-test-recording.md      manual checklist, including the 3 h acceptance test
 ```
 

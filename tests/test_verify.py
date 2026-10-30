@@ -84,3 +84,71 @@ def test_short_digital_silences_inside_sound_are_counted(db, data_dir: Path, sta
     add_segments(db, data_dir, sid, timeline)
     levels = verify.sound_levels(db, data_dir, sid)
     assert verify.short_digital_silences(levels) == 1
+
+
+# --- steps of a manual test ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("delay", "starts", "ok"),
+    [
+        (0.20, True, True),  # usual browser + audio latency after the key
+        (0.95, True, True),
+        (-0.10, True, True),
+        (-1.10, True, False),  # sound before the key: timeline shifted early (initial silence lost)
+        (1.40, True, False),  # timeline shifted late
+        (0.20, False, True),
+        (-0.80, False, True),  # paused between two words
+        (0.90, False, False),
+    ],
+)
+def test_media_key_step_timing(delay: float, starts: bool, ok: bool) -> None:
+    step = verify.Step(prompt=60.0, done=60.0, by_key=True)
+    result, detail = verify.step_timing(60.0 + delay, step, starts=starts)
+    assert result is ok
+    assert f"({delay:+.2f} s)" in detail
+
+
+def test_manual_step_must_fall_between_prompt_and_enter() -> None:
+    # The user's guided run of 2026-10-30: the action came first, Enter a few seconds later.
+    play = verify.Step(prompt=5.0, done=13.17, by_key=False)
+    pause = verify.Step(prompt=60.0, done=66.35, by_key=False)
+    assert verify.step_timing(8.15, play, starts=True)[0]
+    assert verify.step_timing(63.95, pause, starts=False)[0]
+    assert not verify.step_timing(3.9, play, starts=True)[0]  # before it was asked for
+    assert not verify.step_timing(14.2, play, starts=True)[0]  # after Enter
+    assert verify.step_timing(None, play, starts=True) == (False, "no sound change found")
+
+
+def events_of_a_test_run() -> list[dict]:
+    """Device events as the user's run produced them: unplug at 12:56:37, replug at 12:56:56."""
+    t = 1_793_300_000.0
+    return [
+        {"type": "started", "time": t, "device": "Speakers"},
+        {"type": "device_lost", "time": t + 120.0, "device": "Speakers",
+         "reason": "stream stopped"},
+        {"type": "device_opened", "time": t + 120.1, "device": "Monitor", "gap_ms": 121},
+        {"type": "device_lost", "time": t + 139.0, "device": "Monitor",
+         "reason": "default output changed"},
+        {"type": "device_opened", "time": t + 139.1, "device": "Speakers", "gap_ms": 53},
+    ]
+
+
+def test_device_switch_done_before_enter_is_found() -> None:
+    events = events_of_a_test_run()
+    t = events[0]["time"]
+    # Unplug asked at 100 s, done at 120 s, Enter at 126 s: the switch precedes Enter.
+    lost, opened = verify.device_switch(events, t + 100.0, t + 126.0 + 5.0)
+    assert (lost["reason"], opened["device"]) == ("stream stopped", "Monitor")
+    # Replug asked at 126 s (right after the previous Enter), Enter at 142 s.
+    lost, opened = verify.device_switch(events, t + 126.0, t + 142.0 + 5.0)
+    assert (lost["reason"], opened["device"]) == ("default output changed", "Speakers")
+
+
+def test_device_switch_outside_the_interval_is_not_found() -> None:
+    events = events_of_a_test_run()
+    t = events[0]["time"]
+    assert verify.device_switch(events, t + 121.0, t + 130.0) is None  # loss before the prompt
+    assert verify.device_switch(events, t + 100.0, t + 110.0) is None  # nothing in time
+    # A loss whose reopen comes after the interval is not a complete switch.
+    assert verify.device_switch(events, t + 135.0, t + 139.05) is None

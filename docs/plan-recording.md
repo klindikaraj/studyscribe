@@ -388,6 +388,14 @@ The CLI always prints the path in use.
   automatically, `taskkill /F` on the capture process at 3:10): recovered `interrupted`, 4
   segments, duration -0.24 s from real time, `ended_at` -0.14 s from the kill; the sound and
   switch checks failed as they should without audio or device changes.
+- Manual test, guided run by the user (2026-10-30), steps by hand: recorder checks all passed
+  (5 segments, duration -0.23 s from real time, `ended_at` -0.21 s from the kill, switch gaps
+  121 and 53 ms, manifest gap 165 ms vs 174 ms reported, python.exe listed by
+  `powercfg /requests`). Four checks failed because of the test, not the recorder: the video
+  was in another window, so each action came a few seconds before the Enter that marked it
+  (play 5 s, pause 2.4 s), and the switch check looked only after the Enter. Fixed by the media
+  key and by judging hand-made steps between their prompt and Enter; the same recording,
+  checked again with the new rules, passes everything.
 - Recovery piece, tests by the user (2026-10-29), video playing:
   - `taskkill /F` on the capture process at ~90 s: the probe recovered the session itself:
     `interrupted`, 90.251 s, segment 2 repaired and added, child exit code 1.
@@ -421,12 +429,16 @@ The CLI always prints the path in use.
   (odd trailing byte, foreign header rejected); migrations (idempotence, rollback, status
   CHECK); recovery on a fake session.
 - Manual: `docs/manual-test-recording.md` and `scripts/manual_recording_test.py`. The guided
-  run (about 4 minutes) records a session and prompts each step at a suggested time: play 5 s
-  after the start (initial silence), pause and resume, unplug and replug the headphones,
-  `powercfg /requests` (answered by the user), then a kill of the capture process from Task
-  Manager in segment 4 (so both switches fall in closed segments). It saves the marks in the
-  session folder as it goes, recovers the session as its owner and checks: status, manifest vs
-  files (`verify.py`), duration vs real time (±1 s), `ended_at` vs the kill (±1 s), first sound
-  vs play, last sound vs pause, first sound vs resume (±1 s each, from 50 ms RMS levels above
-  -50 dBFS), both switches reported within 5 s, manifest gap vs reported gaps. `--check <id>`
-  runs recovery and the checks on any session, with the marks if they were saved.
+  run (about 4 minutes) records a session; at suggested times it plays (5 s after the start,
+  so the recording begins in silence), pauses and resumes the video by sending the media
+  Play/Pause key itself (SendInput, ctypes), so those instants are exact; `--manual` turns them
+  into prompts. The other steps are prompts where the user acts first and then presses Enter:
+  unplug and replug the headphones, `powercfg /requests`, then a kill of the capture process
+  from Task Manager in segment 4 (so both switches fall in closed segments). For every step it
+  saves when it was asked for and when it was done, recovers the session as its owner and
+  checks: status, manifest vs files, duration vs real time (±1 s), `ended_at` vs the kill
+  (±1 s); sound start at play/resume and stop at pause (50 ms RMS windows above -50 dBFS),
+  within -0.25..+1 s (start) or -1..+0.5 s (stop) of a media key, or between prompt and Enter
+  ±0.5 s by hand; each switch reported between its prompt and 5 s after Enter; manifest gap vs
+  reported gaps. The judging rules live in `verify.py` (tested). `--check <id>` runs recovery
+  and the checks on any session, with the saved steps if any.

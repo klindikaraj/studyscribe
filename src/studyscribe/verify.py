@@ -1,4 +1,5 @@
-"""Checks on a recorded session: manifest against files, and where the sound is on the timeline.
+"""Checks on a recorded session: manifest against files, where the sound is on the timeline, and
+whether the steps of a manual test show up where they should.
 
 Used by scripts/manual_recording_test.py to verify a real recording after the fact.
 """
@@ -9,6 +10,8 @@ import re
 import sqlite3
 import struct
 import wave
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +25,15 @@ WINDOW_S = 0.05  # level resolution
 WINDOW_FRAMES = round(WINDOW_S * SAMPLE_RATE)
 SOUND_DB = -50.0  # a window this loud counts as sound (lecture speech is around -20 to -40)
 DIGITAL_SILENCE_DB = -95.0  # all zeros, or within a sample step of them
+
+# Where the sound may start or stop, relative to a media key sent by the test script. After the
+# key the browser needs a moment to react and the audio to come out (+); a video paused between
+# two words goes quiet a little before the key (-). A timeline shifted by a second or more
+# falls outside these windows.
+KEY_START_S = (-0.25, 1.0)
+KEY_STOP_S = (-1.0, 0.5)
+# A step done by hand happens between its prompt and the Enter that confirms it.
+MANUAL_MARGIN_S = 0.5
 
 _SEGMENT_NAME = re.compile(r"\d{6}\.wav")
 
@@ -126,3 +138,56 @@ def short_digital_silences(levels: np.ndarray, max_s: float = 0.3) -> int:
             count += 1
         run = 0
     return count
+
+
+# --- steps of a manual test ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Step:
+    """When a test step happened, in seconds on the session timeline.
+
+    `prompt`: when the step was asked for. `done`: when the script sent it as a media key
+    (`by_key`, exact), or when the user confirmed it with Enter (some time after doing it).
+    """
+
+    prompt: float
+    done: float
+    by_key: bool
+
+
+def step_timing(sound: float | None, step: Step, starts: bool) -> tuple[bool, str]:
+    """Whether a sound change at `sound` (s) fits `step`, and a description of the comparison.
+
+    `starts`: the step makes the sound start (play, resume) rather than stop (pause).
+    """
+    if sound is None:
+        return False, "no sound change found"
+    if step.by_key:
+        low, high = KEY_START_S if starts else KEY_STOP_S
+        delay = sound - step.done
+        detail = f"sound at {sound:.2f} s, key at {step.done:.2f} s ({delay:+.2f} s)"
+        return low <= delay <= high, detail
+    ok = step.prompt - MANUAL_MARGIN_S <= sound <= step.done + MANUAL_MARGIN_S
+    detail = f"sound at {sound:.2f} s, asked at {step.prompt:.2f} s, Enter at {step.done:.2f} s"
+    return ok, detail
+
+
+def device_switch(
+    events: Sequence[dict], start: float, end: float
+) -> tuple[dict, dict] | None:
+    """The first `device_lost` event within [start, end] and the `device_opened` that follows
+    it within the same interval (event times, epoch seconds), or None."""
+    lost = next(
+        (e for e in events if e["type"] == "device_lost" and start <= e["time"] <= end), None
+    )
+    if lost is None:
+        return None
+    opened = next(
+        (
+            e for e in events
+            if e["type"] == "device_opened" and lost["time"] <= e["time"] <= end
+        ),
+        None,
+    )
+    return None if opened is None else (lost, opened)

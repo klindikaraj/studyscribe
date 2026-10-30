@@ -9,9 +9,14 @@ sessions in `%TEMP%\studyscribe-manual-test` unless you pass `--data-dir`.
 - `.venv\Scripts\python -m pytest` passes.
 - Headphones plugged into the jack whose endpoint disappears when they are unplugged (on the
   test PC: Realtek), with a second output available (the monitor).
-- A lecture video ready and **paused** at a point where someone is talking.
+- The lecture video open in the browser: **play it, then pause it** at a point where someone is
+  talking. Playing it once gives the browser the media session that receives the media
+  Play/Pause key; the browser does not need to be in the foreground.
+- Close other media apps (music players, other tabs playing audio): Windows sends the media key
+  to the most recent media session, which must be the video.
 - Task Manager open on the Details tab, and an **administrator** PowerShell for
-  `powercfg /requests`.
+  `powercfg /requests`. Keep administrator windows out of the foreground at 0:05, 1:00 and
+  1:20: Windows silently drops keys that a normal program sends to an elevated window.
 
 ## A. Guided test (about 4 minutes)
 
@@ -19,18 +24,25 @@ sessions in `%TEMP%\studyscribe-manual-test` unless you pass `--data-dir`.
 .venv\Scripts\python scripts\manual_recording_test.py
 ```
 
-The script prompts each step at the suggested time; do it and press Enter at the same moment.
+The script plays, pauses and resumes the video itself by sending the media Play/Pause key, so
+those moments are known exactly. For the other steps it shows a prompt: **first do the action,
+then press Enter**; the checks look for its effect anywhere between the prompt and a few seconds
+after your Enter.
 
-| When | You do | Expected on screen |
+| When | What happens | Expected on screen |
 |---|---|---|
 | start | nothing (video paused) | `Recording from Speakers (Realtek(R) Audio) [Loopback] …` |
-| 0:05 | press play | — |
-| 1:00 | pause | — |
-| 1:20 | resume | — |
-| 1:40 | unplug the headphones | `Device lost (stream stopped): Speakers …`, then `Switched to <monitor> …, gap N ms` |
-| 2:05 | plug them back in | `Device lost (default output changed): <monitor> …`, then `Switched to Speakers …` |
-| ~2:10 | `powercfg /requests` in the admin shell; answer whether python.exe is listed under SYSTEM | — |
-| 3:10 | end the **capture** process (PID shown) in Task Manager, not the script's PID | `Capture process exit code: 1. Recovering the session.`, `Recovered … recording -> interrupted` |
+| 0:05 | the script sends Play/Pause: the video plays | `PLAY the video …: media Play/Pause key sent.` |
+| 1:00 | the script sends Play/Pause: the video pauses | `PAUSE the video: media Play/Pause key sent.` |
+| 1:20 | the script sends Play/Pause: the video plays again | `RESUME the video: media Play/Pause key sent.` |
+| 1:40 | you unplug the headphones, then press Enter | `Device lost (stream stopped): Speakers …`, then `Switched to <monitor> …, gap N ms` |
+| 2:05 | you plug them back in, then press Enter | `Device lost (default output changed): <monitor> …`, then `Switched to Speakers …` |
+| after | you run `powercfg /requests` in the admin shell and answer whether python.exe is listed under SYSTEM | — |
+| 3:10 | you end the **capture** process (PID shown) in Task Manager, not the script's PID | `Capture process exit code: 1. Recovering the session.`, `Recovered … recording -> interrupted` |
+
+If a media key has no audible effect, the script says so at once (`No sound after the key …`):
+stop with Ctrl+C, fix the browser (see "Before you start") and start again. Without media keys,
+`--manual` makes play, pause and resume prompts too: do the action, then press Enter.
 
 Then the script prints the checks and saves them as `manual-test-report.txt` in the session
 folder:
@@ -41,16 +53,17 @@ folder:
 | Segments and files agree | numbering 1..N, segment N at (N-1)·60 s, all but the last exactly 60 s, header sizes match the files, no file missing from the manifest |
 | Duration matches real time | within ±1 s of the time from the start to the kill |
 | ended_at matches the kill | within ±1 s (last write time after a kill, an assumption of the design) |
-| First sound = play pressed | within ±1 s: the initial silence is on the timeline, segment 1 starts at the start |
-| Last sound before the pause / first sound after it | within ±1 s each: the timeline stays aligned across a pause |
-| Unplug followed / Replug followed | a switch reported within 5 s, to the other output / back to the first one |
+| Sound starts at play | media key: from 0.25 s before to 1 s after the key (the browser and the audio output take a moment); `--manual`: between the prompt and your Enter, ±0.5 s. Proves the initial silence is on the timeline |
+| Sound stops at pause | media key: from 1 s before (paused between two words) to 0.5 s after the key; `--manual`: as above |
+| Sound starts again at resume | as for play: the timeline stays aligned across a pause |
+| Unplug followed / Replug followed | a switch reported between the prompt and 5 s after Enter, to the other output / back to the first one |
 | Device gaps in the manifest | manifest gap = sum of the reported gaps, ±100 ms per switch |
 | Anti-standby | you answered `y` |
 | INFO lines | short digital silences inside sound, warnings: for the record |
 
-The marks are pressed by hand: if a timing check misses by a little more than 1 s, repeat the
-test before suspecting the code. If you kill the wrong process (the script), check the session
-afterwards with `--check` (section B, step 4): the marks are saved as you go.
+A timeline shifted by a second or more fails the timing checks. If you kill the wrong process
+(the script), check the session afterwards with `--check` (section B, step 4): the steps are
+saved as they happen.
 
 ## B. Recovery by another process (both processes killed)
 
