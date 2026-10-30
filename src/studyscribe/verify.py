@@ -32,6 +32,10 @@ DIGITAL_SILENCE_DB = -95.0  # all zeros, or within a sample step of them
 # falls outside these windows.
 KEY_START_S = (-0.25, 1.0)
 KEY_STOP_S = (-1.0, 0.5)
+# The first play of a test can be slower: the browser may have to reopen its audio output
+# after a long pause (seen: +1.08 s, against +0.41 s for the resume of the same test). Only the
+# upper bound is wider: a lost initial silence would put the sound before the key.
+KEY_COLD_START_S = (-0.25, 2.0)
 # A step done by hand happens between its prompt and the Enter that confirms it.
 MANUAL_MARGIN_S = 0.5
 
@@ -156,15 +160,21 @@ class Step:
     by_key: bool
 
 
-def step_timing(sound: float | None, step: Step, starts: bool) -> tuple[bool, str]:
+def step_timing(
+    sound: float | None, step: Step, starts: bool, cold: bool = False
+) -> tuple[bool, str]:
     """Whether a sound change at `sound` (s) fits `step`, and a description of the comparison.
 
     `starts`: the step makes the sound start (play, resume) rather than stop (pause).
+    `cold`: the first play, after the player's audio output had been idle for a while.
     """
     if sound is None:
         return False, "no sound change found"
     if step.by_key:
-        low, high = KEY_START_S if starts else KEY_STOP_S
+        if starts:
+            low, high = KEY_COLD_START_S if cold else KEY_START_S
+        else:
+            low, high = KEY_STOP_S
         delay = sound - step.done
         detail = f"sound at {sound:.2f} s, key at {step.done:.2f} s ({delay:+.2f} s)"
         return low <= delay <= high, detail

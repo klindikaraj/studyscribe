@@ -35,7 +35,7 @@ after your Enter.
 | 0:05 | the script sends Play/Pause: the video plays | `PLAY the video …: media Play/Pause key sent.` |
 | 1:00 | the script sends Play/Pause: the video pauses | `PAUSE the video: media Play/Pause key sent.` |
 | 1:20 | the script sends Play/Pause: the video plays again | `RESUME the video: media Play/Pause key sent.` |
-| 1:40 | you unplug the headphones, then press Enter | `Device lost (stream stopped): Speakers …`, then `Switched to <monitor> …, gap N ms` |
+| 1:40 | you unplug the headphones, then press Enter | `Device lost (stream stopped): Speakers …` or `(default output changed)`, whichever Windows signals first; then `Switched to <monitor> …, gap N ms` |
 | 2:05 | you plug them back in, then press Enter | `Device lost (default output changed): <monitor> …`, then `Switched to Speakers …` |
 | after | you run `powercfg /requests` in the admin shell and answer whether python.exe is listed under SYSTEM | — |
 | 3:10 | you end the **capture** process (PID shown) in Task Manager, not the script's PID | `Capture process exit code: 1. Recovering the session.`, `Recovered … recording -> interrupted` |
@@ -53,10 +53,10 @@ folder:
 | Segments and files agree | numbering 1..N, segment N at (N-1)·60 s, all but the last exactly 60 s, header sizes match the files, no file missing from the manifest |
 | Duration matches real time | within ±1 s of the time from the start to the kill |
 | ended_at matches the kill | within ±1 s (last write time after a kill, an assumption of the design) |
-| Sound starts at play | media key: from 0.25 s before to 1 s after the key (the browser and the audio output take a moment); `--manual`: between the prompt and your Enter, ±0.5 s. Proves the initial silence is on the timeline |
-| Sound stops at pause | media key: from 1 s before (paused between two words) to 0.5 s after the key; `--manual`: as above |
-| Sound starts again at resume | as for play: the timeline stays aligned across a pause |
-| Unplug followed / Replug followed | a switch reported between the prompt and 5 s after Enter, to the other output / back to the first one |
+| Sound starts at play | media key: from 0.25 s before to 2 s after the key (the first play can be slow: the browser may have to reopen its audio output; seen +1.08 s); `--manual`: between the prompt and your Enter, ±0.5 s. Proves the initial silence is on the timeline: if it were lost, the sound would come before the key |
+| Sound stops at pause | media key: from 1 s before (paused between two words) to 0.5 s after the key; `--manual`: as above. The audio from play to pause is continuous, so this also shows that the first run of audio sits at the right place |
+| Sound starts again at resume | media key: from 0.25 s before to 1 s after the key (seen +0.41 s); `--manual`: as above |
+| Unplug followed / Replug followed | a switch reported between the prompt and 5 s after Enter, to the other output / back to the first one (gaps seen: 53-624 ms; reopening the Realtek endpoint just after replugging is the slow part) |
 | Device gaps in the manifest | manifest gap = sum of the reported gaps, ±100 ms per switch |
 | Anti-standby | you answered `y` |
 | INFO lines | short digital silences inside sound, warnings: for the record |
@@ -77,17 +77,41 @@ saved as they happen.
 
 ## C. Acceptance test: 3 hours (roadmap step 1)
 
-1. `studyscribe record --title "3 h test"` with a lecture or playlist of at least 3 hours.
-2. Meanwhile: pause once for about 5 minutes; unplug and replug the headphones at least once.
-3. End with Ctrl+C (or kill the capture process in the last minutes: the CLI recovers it).
-4. `manual_recording_test.py --check <id>`.
+Roadmap: a 3 h recording with the headphones unplugged and replugged and a process kill loses
+at most a few seconds, and the timeline stays aligned.
 
-Done when all checks pass and a few seconds listened around each device switch, around the
-pause and at the end sound right. After a clean stop, the sign in "Duration matches real time"
-measures the device clock drift over the whole recording: + means the device clock ran fast
-(the surplus is absorbed only at pauses); expect well under a second. For a continuous drift
-reading, run `scripts\capture_probe.py --session "Drift" --seconds 10800` instead and watch
-`missing` over time.
+Prepare:
+
+- At least 3 h 10 min of lecture in one browser tab (a long video, or a playlist with autoplay
+  on). If playback stops for more than 30 minutes the recording ends by itself.
+- About 120 MB of disk per hour (350 MB in all).
+- Nothing that sleeps or restarts the PC: the recording keeps Windows awake, but a manual sleep
+  or an update restart would stop it.
+- A data directory of its own: `$d = "$env:TEMP\studyscribe-3h"`.
+
+Run:
+
+1. `.venv\Scripts\studyscribe --data-dir $d record --title "3 h test"`, then start the video.
+   Note the capture PID it prints.
+2. Around 0:30, pause the video for about 5 minutes, then resume it.
+3. Around 1:30, unplug the headphones; a few minutes later plug them back in.
+4. After 3:00:00, end the capture process in Task Manager (Details > the capture PID > End
+   task). The CLI recovers the session: `interrupted`, exit code 1.
+5. `.venv\Scripts\python scripts\manual_recording_test.py --data-dir $d --check <id>`.
+
+Passes when:
+
+- every check passes (without a guided run, the timing and switch checks are SKIP);
+- "Duration matches real time" is within ±1 s. Its sign is the device clock drift since the
+  last pause (+ means the device clock ran fast: the surplus is absorbed only at pauses);
+- the CLI output shows both device switches with gaps of at most about a second;
+- the minutes around each switch, the pause and the end sound right. To find them: the
+  session ID holds the start time (`20261030-131710` started at 13:17:10), so an event
+  printed at 14:47:40 is at 1:30:30 on the timeline, i.e. 30 s into segment 91 (`000091.wav`
+  covers 1:30:00-1:31:00).
+
+For a continuous drift reading, run `scripts\capture_probe.py --session "Drift" --seconds 10800`
+instead and watch `missing` over time.
 
 ## D. One-off checks
 

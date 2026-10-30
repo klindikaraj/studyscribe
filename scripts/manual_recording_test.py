@@ -384,8 +384,7 @@ def run_checks(conn, data_dir: Path, session_id: str, notes: dict) -> list[Check
         checks.append(Check(
             "Duration matches real time", _within(diff),
             f"timeline {duration:.2f} s, real {real:.2f} s ({diff:+.2f} s)"
-            + ("; + means the device clock ran fast" if session["status"] == "recorded"
-               and not killed else ""),
+            + ("" if killed else "; + means the device clock ran fast"),
         ))
     if killed and ended is not None:
         diff = ended - steps["killed"]["done"]
@@ -395,7 +394,7 @@ def run_checks(conn, data_dir: Path, session_id: str, notes: dict) -> list[Check
     levels = verify.sound_levels(conn, data_dir, session_id)
     play, pause, resume = (timeline.get(name) for name in ("play", "pause", "resume"))
     checks.append(_timing("Sound starts at play (initial silence kept)",
-                          verify.first_sound(levels), play, starts=True))
+                          verify.first_sound(levels), play, starts=True, cold=True))
     if play and pause and resume:
         # The pause is the last sound before the resume was asked for; the resume is the first
         # sound once the pause is over (the player may send silence for a while after a pause).
@@ -434,10 +433,12 @@ def _within(diff: float, tolerance: float = TOLERANCE_S) -> str:
     return "PASS" if abs(diff) <= tolerance else "FAIL"
 
 
-def _timing(name: str, sound: float | None, step: verify.Step | None, starts: bool) -> Check:
+def _timing(
+    name: str, sound: float | None, step: verify.Step | None, starts: bool, cold: bool = False
+) -> Check:
     if step is None:
         return Check(name, "SKIP", "no record of the step")
-    ok, detail = verify.step_timing(sound, step, starts)
+    ok, detail = verify.step_timing(sound, step, starts, cold)
     return Check(name, "PASS" if ok else "FAIL", detail)
 
 

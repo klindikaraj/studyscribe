@@ -109,6 +109,25 @@ def test_media_key_step_timing(delay: float, starts: bool, ok: bool) -> None:
     assert f"({delay:+.2f} s)" in detail
 
 
+def test_first_play_may_start_later_than_a_resume() -> None:
+    # The user's second guided run (2026-10-30): first play +1.08 s after the key, resume
+    # +0.41 s. The first play gets up to +2 s; pause and resume keep their windows.
+    play = verify.Step(prompt=5.07, done=5.07, by_key=True)
+    assert verify.step_timing(6.15, play, starts=True, cold=True)[0]
+    assert not verify.step_timing(6.15, play, starts=True)[0]  # a resume this late fails
+    assert not verify.step_timing(7.20, play, starts=True, cold=True)[0]  # +2.13 s
+    # A lost initial silence puts the sound before the key: still a failure.
+    assert not verify.step_timing(5.07 - 0.5, play, starts=True, cold=True)[0]
+    resume = verify.Step(prompt=80.19, done=80.19, by_key=True)
+    assert verify.step_timing(80.60, resume, starts=True)[0]
+    pause = verify.Step(prompt=60.15, done=60.15, by_key=True)
+    assert verify.step_timing(60.25, pause, starts=False)[0]
+    # By hand the window is prompt..Enter whatever `cold` says.
+    by_hand = verify.Step(prompt=5.0, done=9.0, by_key=False)
+    assert verify.step_timing(8.0, by_hand, starts=True, cold=True)[0]
+    assert not verify.step_timing(9.8, by_hand, starts=True, cold=True)[0]
+
+
 def test_manual_step_must_fall_between_prompt_and_enter() -> None:
     # The user's guided run of 2026-10-30: the action came first, Enter a few seconds later.
     play = verify.Step(prompt=5.0, done=13.17, by_key=False)
