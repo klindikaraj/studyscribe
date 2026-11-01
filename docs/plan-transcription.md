@@ -467,4 +467,10 @@ Piece 5:
 
 ## Findings so far
 
-(none yet)
+- Piece 0 (2026-11-01): `--check` on the copy of the 3 h session now says that there are no
+  guided-run notes and that the step, switch and capture event checks are skipped; the gap line
+  shows only the manifest total (248 ms), the warnings line says they were not recorded. The
+  copy `3h-copy` matches the original file by file (SHA-256 of 183 files).
+- Piece 0: the test suite showed two step 1 timing assumptions that fail on a busy PC: Windows
+  releases the locks of a killed process asynchronously, and the capture process can take more
+  than 1.5 s to start. Both fixed; details in `docs/plan-recording.md`, Findings.

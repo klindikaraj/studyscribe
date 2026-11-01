@@ -356,6 +356,9 @@ def run_checks(conn, data_dir: Path, session_id: str, notes: dict) -> list[Check
     summary = repo.get_session_summary(conn, session_id)
     steps = notes.get("steps", {})
     events = notes.get("events", [])
+    # Capture events exist only in the notes of a guided run: without them "no switch" or "no
+    # warning" would be a guess, not a finding.
+    has_events = "events" in notes
     started = _epoch(session["started_at"])
     ended = _epoch(session["ended_at"]) if session["ended_at"] else None
     duration = summary["duration_ms"] / 1000
@@ -414,7 +417,7 @@ def run_checks(conn, data_dir: Path, session_id: str, notes: dict) -> list[Check
                           lambda opened: opened != first_device))
     checks.append(_switch("Replug followed", events, steps.get("replug"),
                           lambda opened: opened == first_device))
-    checks.append(_gaps(conn, session_id, events, started))
+    checks.append(_gaps(conn, session_id, events if has_events else None, started))
 
     answer = notes.get("powercfg") or ""
     checks.append(Check("Anti-standby listed by powercfg /requests",
@@ -424,8 +427,11 @@ def run_checks(conn, data_dir: Path, session_id: str, notes: dict) -> list[Check
                         f"{verify.short_digital_silences(levels)} (timeline insertions or "
                         "silent spots in the video)"))
     warnings = [e["message"] for e in events if e["type"] in ("warning", "error")]
-    checks.append(Check("Warnings and errors from the capture", "INFO",
-                        "; ".join(warnings) if warnings else "none"))
+    if not has_events:
+        detail = "not recorded (no guided-run notes): see the output of the recording"
+    else:
+        detail = "; ".join(warnings) if warnings else "none"
+    checks.append(Check("Warnings and errors from the capture", "INFO", detail))
     return checks
 
 
@@ -456,10 +462,15 @@ def _switch(name: str, events: list[dict], step: dict | None, expected) -> Check
     return Check(name, "PASS" if expected(opened["device"]) else "FAIL", detail)
 
 
-def _gaps(conn, session_id: str, events: list[dict], started: float) -> Check:
-    opened = [e for e in events if e["type"] == "device_opened"]
+def _gaps(conn, session_id: str, events: list[dict] | None, started: float) -> Check:
+    """Manifest gap against the gaps the capture reported; `events` None: none were recorded."""
     rows = repo.list_audio_segments(conn, session_id)
     manifest = sum(row["gap_ms"] for row in rows)
+    if events is None:
+        return Check("Device gaps in the manifest", "SKIP",
+                     f"manifest {manifest} ms; no capture events recorded (no guided-run "
+                     "notes): compare with the gaps printed while recording")
+    opened = [e for e in events if e["type"] == "device_opened"]
     reported = sum(e["gap_ms"] for e in opened)
     detail = f"manifest {manifest} ms, reported {reported} ms"
     if not opened:
@@ -484,11 +495,16 @@ def _epoch(iso: str) -> float:
 def report(conn, data_dir: Path, session_id: str, notes: dict) -> int:
     summary = repo.get_session_summary(conn, session_id)
     checks = run_checks(conn, data_dir, session_id, notes)
-    how = {True: "media key", False: "by hand"}.get(notes.get("media_keys"), "by hand")
+    if notes:
+        how = "media key" if notes.get("media_keys") else "by hand"
+        run = f"guided run, play/pause {how}"
+    else:
+        run = (f"no guided-run notes ({NOTES_FILE}): step, switch and capture event checks "
+               "skipped")
     lines = [
         f"Checks for session {session_id}: {summary['status']}, "
         f"{format_duration(summary['duration_ms'])} in {summary['segments']} segment(s), "
-        f"gap {summary['gap_ms'] / 1000:.1f} s; play/pause {how}",
+        f"gap {summary['gap_ms'] / 1000:.1f} s; {run}",
     ]
     width = max(len(c.name) for c in checks)
     lines += [f"  {c.result:<4}  {c.name.ljust(width)}  {c.detail}" for c in checks]

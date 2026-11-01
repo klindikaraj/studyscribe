@@ -110,7 +110,8 @@ Passes when:
 - the CLI output shows both device switches with gaps of at most about a second;
 - the manifest gap, shown on the `Device gaps in the manifest` line, matches the sum of the
   gaps printed by the CLI, ±100 ms per switch. Without a guided run `--check` has no record of
-  the steps, so that line says `reported 0 ms` and the header `play/pause by hand`: ignore both;
+  the steps or of the capture events (the header says so), so that line shows only the manifest
+  total: compare it with the CLI output by hand;
 - the minutes around each switch, the pause and the end sound right. To find them: the
   session ID holds the start time (`20261030-131710` started at 13:17:10), so an event
   printed at 14:47:40 is at 1:30:30 on the timeline, i.e. 30 s into segment 91 (`000091.wav`
