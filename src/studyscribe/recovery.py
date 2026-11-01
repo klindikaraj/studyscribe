@@ -30,6 +30,10 @@ from studyscribe.session import CAPTURE_LOCK_BYTE, OWNER_LOCK_BYTE, session_lock
 from studyscribe.system.locks import ByteLock
 
 RECOVERABLE = ("recording", "recorded", "interrupted")
+# An owner recovers its session after its capture process has exited, but Windows may still
+# hold that process's lock for a moment (up to 430 ms measured under load): the owner waits
+# this long for it. Anyone else takes a held lock as a live recording, without waiting.
+CAPTURE_EXIT_WAIT_S = 2.0
 _SEGMENT_NAME = re.compile(r"(\d{6})\.wav")
 
 
@@ -79,7 +83,8 @@ def recover_session(
     """Recover one session; None if it is still being recorded or not recoverable.
 
     The process that started the recording passes its `owner_lock` when its capture process
-    died: the session is then recovered although that lock is (by itself) still held.
+    died: the session is then recovered although that lock is (by itself) still held, waiting
+    up to CAPTURE_EXIT_WAIT_S for the dead process's capture lock to be released.
     """
     session = repo.get_session(conn, session_id)
     if session is None or session["status"] not in RECOVERABLE:
@@ -87,14 +92,14 @@ def recover_session(
     folder = session_dir(data_dir, session_id)
     if not folder.is_dir():
         return _without_folder(conn, session)
-    bytes_to_lock = [CAPTURE_LOCK_BYTE]
-    if owner_lock is None or not owner_lock.held:
-        bytes_to_lock.insert(0, OWNER_LOCK_BYTE)
+    by_owner = owner_lock is not None and owner_lock.held
+    bytes_to_lock = [CAPTURE_LOCK_BYTE] if by_owner else [OWNER_LOCK_BYTE, CAPTURE_LOCK_BYTE]
+    wait_s = CAPTURE_EXIT_WAIT_S if by_owner else 0.0
     locks: list[ByteLock] = []
     try:
         for byte in bytes_to_lock:
             lock = session_lock(data_dir, session_id, byte)
-            if not lock.acquire():
+            if not lock.acquire(wait_s=wait_s):
                 return None  # still being recorded
             locks.append(lock)
         return _recover(conn, folder, session, segment_frames)

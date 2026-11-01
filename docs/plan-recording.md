@@ -265,6 +265,8 @@ Agreed deviations from the original design notes:
   `recording` row with a free lock.
 - If only the capture process dies, its owner recovers the session itself, passing its own
   lock (`recover_session(..., owner_lock=...)`); recovery in other processes keeps skipping it.
+  Windows releases a dead process's locks asynchronously, so the owner waits up to 2 s for the
+  capture lock (found in step 2, see Findings).
 - Sessions in `recording` with both locks free: read the mtime of the last segment first (the
   repair would change it), repair the header of every segment without a manifest row from the
   file size (half a trailing sample is cut; a header cut short is completed with 0 frames),
@@ -442,6 +444,15 @@ Run by the user as in section C of `docs/manual-test-recording.md`: session
   - `taskkill /F /T` on the probe at ~65 s (both processes; the probe's own parent was the venv
     launcher), then `--recover`: `interrupted`, 65.387 s; a second `--recover`: nothing to do.
   - `--silence-limit 20` with nothing playing: stopped by itself at 20.0 s, `recorded`, warning.
+- Lock release after a kill (2026-11-01, found while starting step 2: `test_locks` failed about
+  1 run in 8 of the full suite): after TerminateProcess and a completed wait on the process, a
+  byte lock it held was still taken in 9 of 40 trials (up to 18 ms) on an idle PC and in 37 of
+  40 (up to 430 ms) with the CPU loaded. So an owner recovering its session right after its
+  capture process died could find the capture lock still held, skip the session and leave it in
+  `recording` until the next command. `ByteLock.acquire(wait_s=...)` retries; the owner waits up
+  to 2 s, everyone else still treats a held lock as a live recording. Under the same load the CLI
+  test `max_seconds` (tests only) expired before the capture process had even started; it now
+  counts from the `started` event.
 - Recovery piece, on the test PC (nothing playing, so the timeline was silence):
   - `taskkill /F` on the capture process after ~4 s: the probe (owner) recovered the session:
     `interrupted`, one segment of 3.972 s, header repaired; `ended_at - started_at` = 4.07 s

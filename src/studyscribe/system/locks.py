@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
+
+POLL_S = 0.01  # retry interval of acquire(wait_s=...)
 
 
 def _lock(fd: int, offset: int) -> None:
@@ -38,6 +41,11 @@ class ByteLock:
     means that nobody holds it any more. On Windows (msvcrt.locking) locks belong to the open
     file handle: a second ByteLock on the same byte fails even within one process. On other
     systems (fcntl) they belong to the process, so that case is not detected there.
+
+    Windows drops the locks of a dead process asynchronously: measured after TerminateProcess
+    and a completed wait on the process, the lock was still held in 9 of 40 trials (up to 18 ms)
+    on an idle PC and in 37 of 40 (up to 430 ms) under CPU load. A caller that knows the
+    holder is dead passes `wait_s`.
     """
 
     def __init__(self, path: Path | str, offset: int) -> None:
@@ -49,16 +57,22 @@ class ByteLock:
     def held(self) -> bool:
         return self._fd is not None
 
-    def acquire(self) -> bool:
-        """Take the lock; False if someone else holds it. OSError if the file cannot be opened."""
+    def acquire(self, wait_s: float = 0.0) -> bool:
+        """Take the lock, retrying for up to `wait_s` seconds; False if someone else still holds
+        it. OSError if the file cannot be opened."""
         if self._fd is not None:
             return True
+        deadline = time.monotonic() + wait_s
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
-        try:
-            _lock(fd, self.offset)
-        except OSError:
-            os.close(fd)
-            return False
+        while True:
+            try:
+                _lock(fd, self.offset)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    return False
+                time.sleep(POLL_S)
         self._fd = fd
         return True
 

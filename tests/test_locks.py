@@ -1,5 +1,7 @@
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -64,5 +66,26 @@ def test_lock_is_released_when_its_process_is_killed(tmp_path: Path) -> None:
         holder.kill()  # TerminateProcess on Windows, as Task Manager does
         holder.wait()
         holder.stdout.close()
-    assert probe.acquire()
+    # Windows releases a dead process's locks asynchronously, even after the wait above (this
+    # assertion without a wait failed about 1 run in 8 of the full suite).
+    assert probe.acquire(wait_s=2.0)
     probe.release()
+
+
+@windows_only
+def test_acquire_waits_only_as_long_as_asked(tmp_path: Path) -> None:
+    path = tmp_path / "session.lock"
+    holder, probe = ByteLock(path, 1), ByteLock(path, 1)
+    assert holder.acquire()
+    try:
+        started = time.monotonic()
+        assert not probe.acquire(wait_s=0.1)
+        assert 0.1 <= time.monotonic() - started < 1.0
+        # Released while the probe waits: taken as soon as it is free.
+        timer = threading.Timer(0.1, holder.release)
+        timer.start()
+        assert probe.acquire(wait_s=2.0)
+        timer.join()
+    finally:
+        holder.release()
+        probe.release()
