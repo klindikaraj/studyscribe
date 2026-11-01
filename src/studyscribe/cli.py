@@ -31,6 +31,7 @@ from studyscribe.session import SessionSink, new_session
 
 LEVEL_FLOOR_DB = -60.0  # left end of the level bar
 LEVEL_BAR_WIDTH = 20
+STARTUP_CAP_S = 60.0  # with max_seconds (tests): longest wait for the capture to start
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,7 +106,8 @@ def cmd_record(
     capture_options: dict[str, Any] | None = None,
     max_seconds: float | None = None,
 ) -> int:
-    """Record until Ctrl+C (or `max_seconds`, used by tests); 0 if the session is 'recorded'.
+    """Record until Ctrl+C (or `max_seconds` after the capture started, used by tests); 0 if
+    the session is 'recorded'.
 
     `capture_options` override CaptureConfig fields (tests pass fake sources).
     """
@@ -178,11 +180,15 @@ def _run_capture(config: CaptureConfig, out: TextIO, max_seconds: float | None) 
     handle.start()
     print(f"Parent pid {os.getpid()}, capture pid {handle.pid}. Ctrl+C to stop.", file=out)
     status = StatusLine(out)
-    deadline = None if max_seconds is None else time.monotonic() + max_seconds
+    # Spawning the process can take seconds on a busy PC: `max_seconds` counts from the start
+    # of the capture (the process ends by itself if it cannot start, so the cap is a safety net).
+    deadline = None if max_seconds is None else time.monotonic() + STARTUP_CAP_S
     try:
         while handle.is_alive() and (deadline is None or time.monotonic() < deadline):
             for event in handle.events(timeout=0.2):
                 status.show(event)
+                if event["type"] == "started" and max_seconds is not None:
+                    deadline = time.monotonic() + max_seconds
     except KeyboardInterrupt:
         status.message("Stopping...")
     while True:
