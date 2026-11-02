@@ -540,3 +540,8 @@ Piece 5:
     that is piece 5.
   - The final line of a resumed run first read "2:57:34 in 0:03:27", the time of the last
     attempt only; it now says what this attempt did and gives the total processing time.
+- Piece 4 (2026-11-02), exports of the copy's transcript: `export --audio` took 3.8 s in all;
+  `audio.flac` is 154 MB against 326 MB of WAV (47%) and decodes to exactly the samples of the
+  segments (tested on a full 60 s segment plus a short last one). The transcript starts at
+  0:00:09 with the end of the video's first sentence ("course you are looking for. My name is
+  Beau Karnes..."): the recording began a few seconds into the video.

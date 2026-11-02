@@ -1,4 +1,4 @@
-"""Command-line entry point: record, transcribe, sessions, recover."""
+"""Command-line entry point: record, transcribe, export, sessions, recover."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from studyscribe.recovery import (
     recover_transcriptions,
 )
 from studyscribe.session import SessionSink, new_session
+from studyscribe.transcribe import export
 from studyscribe.transcribe.engine import Transcriber, TranscriberError
 from studyscribe.transcribe.language import describe
 from studyscribe.transcribe.runner import CannotTranscribe, transcribe_session
@@ -96,6 +97,16 @@ def build_parser() -> argparse.ArgumentParser:
                             help="start from scratch instead of resuming an interrupted run")
     transcribe.add_argument("--hints", metavar="TEXT",
                             help="words to expect (title, technical terms), passed to the model")
+    export_parser = commands.add_parser(
+        "export",
+        help="write the transcript files of a session (exports/ in its folder)",
+        description="Write transcript.srt, transcript.md and transcript-dropped.txt from the "
+        "session's transcript (transcribe writes them too); --audio also joins the segments "
+        "into audio.flac, with the same timeline.",
+    )
+    export_parser.add_argument("session_id", metavar="SESSION_ID")
+    export_parser.add_argument("--audio", action="store_true",
+                               help="also write audio.flac (the whole recording, lossless)")
     commands.add_parser(
         "sessions",
         help="list the sessions with status and duration",
@@ -126,6 +137,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_record(conn, data_dir, args, sys.stdout)
         if args.command == "transcribe":
             return cmd_transcribe(conn, data_dir, args, sys.stdout)
+        if args.command == "export":
+            return cmd_export(conn, data_dir, args, sys.stdout)
         if args.command == "sessions":
             return cmd_sessions(conn, data_dir, sys.stdout)
         return cmd_recover(conn, data_dir, sys.stdout)
@@ -270,6 +283,31 @@ def cmd_transcribe(
     else:
         timing = f"{total} in {format_duration(progress.elapsed_ms())} ({speed:.0f}x real time)"
     print(f"Done: {timing}, {result.kept} segments kept, {result.dropped} dropped", file=out)
+    return _write_exports(conn, data_dir, args.session_id, out, audio=False)
+
+
+def cmd_export(conn: sqlite3.Connection, data_dir: Path, args: argparse.Namespace,
+               out: TextIO) -> int:
+    if repo.get_session(conn, args.session_id) is None:
+        print(f"No session {args.session_id} in this data directory.", file=out)
+        return 2
+    return _write_exports(conn, data_dir, args.session_id, out, audio=args.audio)
+
+
+def _write_exports(conn: sqlite3.Connection, data_dir: Path, session_id: str, out: TextIO,
+                   audio: bool) -> int:
+    try:
+        paths = export.export_text(conn, data_dir, session_id)
+        if audio:
+            print("Joining the segments into audio.flac...", file=out, flush=True)
+            paths.append(export.export_audio(conn, data_dir, session_id))
+    except export.NoTranscript as exc:
+        print(f"Cannot export: {exc}", file=out)
+        return 1
+    except OSError as exc:
+        print(f"Cannot write the exports: {exc}", file=out)
+        return 1
+    print(f"Exports in {paths[0].parent}: " + ", ".join(p.name for p in paths), file=out)
     return 0
 
 
