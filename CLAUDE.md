@@ -29,8 +29,10 @@ timestamps. The repo is public; the app runs on one Windows PC.
 Current state: steps 1 and 2 done. Step 1's acceptance test (`docs/manual-test-recording.md`,
 section C: 3 h recording) passed on 2026-10-30. Step 2 (plan and findings:
 `docs/plan-transcription.md`) passed its acceptance test on the same 3 h recording on
-2026-11-02 (`docs/manual-test-transcription.md`, section C); the Italian check (section D) is
-awaiting the user's listening. Step 3 is next and has no plan yet: plan it first.
+2026-11-02 (`docs/manual-test-transcription.md`, section C), and the Italian check (section D)
+passed too. Step 3 is next and has no plan yet: plan it first. Carried over to it: correct ASR
+errors on technical terms from context ("TEC" -> `detach`) and write code identifiers read
+aloud in code form (`PyTorch.neuralNetwork` -> `torch.nn`, "ipsilon pred" -> `y_pred`).
 
 ## Architecture principles
 

@@ -2,6 +2,9 @@
 
 Agreed plan for step 2 of the roadmap (approved 2026-11-01). Update it when a decision changes.
 
+Step 2 is done: its acceptance test passed on 2026-11-02 (see Findings and
+`docs/manual-test-transcription.md`).
+
 ## Goal
 
 Transcribe a recorded session locally on the GPU, with timestamps on the session timeline and no
@@ -583,3 +586,12 @@ Piece 5:
     Linear, Weight. Suspect: "Da PyTorch.neuralNetwork peschiamo la classe Linear" (0:06:30,
     probably `torch.nn`), "YPRED" (0:14:01, `y_pred`), "col metodo di TEC" (0:14:08, probably
     `detach`): code identifiers read aloud are the weak spot.
+  - Listening by the user: the first two are faithful to what is said ("Da
+    PyTorch.neuralNetwork", "ipsilon pred"); "TEC" for "detach" is the only real error found.
+- Carried over to step 3 (notes): correct ASR errors on technical terms from the context
+  ("TEC" -> `detach`), and write code identifiers read aloud in their code form
+  (`PyTorch.neuralNetwork` -> `torch.nn`, "ipsilon pred" -> `y_pred`). This needs the
+  lecture's context, so it is a job for the LLM, not for the ASR.
+
+Step 2 is done (2026-11-02): acceptance test on the 3 h recording passed (time 4 min 51 s, the
+5 points correct, nothing in the pause), Italian check passed.

@@ -84,4 +84,12 @@ Result (2026-11-02): detected `it` 1.00 on 180 s of speech; `--language it` give
 | 4 | 0:11:05 | `000012.wav` at 5 s | "Uno dei più usati ed apprezzati si chiama Adam ... eta è la velocità di apprendimento o learning rate." | terms |
 | 5 | 0:14:01 | `000015.wav` at 1 s | "Occhio che su YPRED sono presenti sì gli output, ma anche dei dati relativi ai gradienti ... stacchiamoli col metodo di TEC per plottare solo gli output." | suspect: `y_pred`, `detach` |
 
-Listening by the user: pending.
+Listening by the user (2026-11-02, VLC): points 1, 2 and 4 correct. Point 3 is faithful: the
+lecturer does say "Da PyTorch.neuralNetwork" (the code on screen is `model =
+torch.nn.Linear()`). Point 5: he says "ipsilon pred" (`y_pred` in the code), so "YPRED" is
+faithful too; then he says "detach", and "TEC" is the only real error. Accepted.
+
+For step 3 (notes): correct errors like "TEC" -> `detach` from the context, and write code
+identifiers read aloud in their code form (`PyTorch.neuralNetwork` -> `torch.nn`, "ipsilon
+pred" -> `y_pred`). Both need the context of the lecture, so they belong to the LLM, not to
+the ASR (hints did not help, see the plan).

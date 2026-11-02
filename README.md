@@ -14,7 +14,7 @@ Early work in progress. Windows only.
 | Step | What | State |
 |---|---|---|
 | 1 | Reliable recording: WASAPI loopback, 60 s WAV segments, crash recovery | done |
-| 2 | Local transcription with faster-whisper | in progress |
+| 2 | Local transcription with faster-whisper: SRT/Markdown export, resume | done |
 | 3 | Study notes with an LLM (configurable model), Markdown/HTML export | planned |
 | 4+ | Live web UI, slide screenshots, automatic session detection | later |
 
