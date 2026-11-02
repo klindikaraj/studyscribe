@@ -20,10 +20,16 @@ dependencies = [
     "numpy>=1.26",
     "soxr>=0.5",
     "PyAudioWPatch>=0.2.12.7; sys_platform == 'win32'",
+    "faster-whisper>=1.2.1,<2",
+    # 4.6.3: first Windows wheel without cuDNN (needs only cuBLAS 12); 5.x may move to CUDA 13.
+    "ctranslate2>=4.6.3,<5",
+    "av>=11",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# cuBLAS 12 for GPU transcription on Windows (transcribe/cuda.py preloads its DLLs).
+cuda = ["nvidia-cublas-cu12>=12.8,<13; sys_platform == 'win32'"]
 
 [project.scripts]
 studyscribe = "studyscribe.cli:main"
@@ -34,3 +40,4 @@ packages = ["src/studyscribe"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = ["gpu: needs an NVIDIA GPU and the downloaded model (run with -m gpu)"]

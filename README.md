@@ -13,8 +13,8 @@ Early work in progress. Windows only.
 
 | Step | What | State |
 |---|---|---|
-| 1 | Reliable recording: WASAPI loopback, 60 s WAV segments, crash recovery | in progress |
-| 2 | Local transcription with faster-whisper | planned |
+| 1 | Reliable recording: WASAPI loopback, 60 s WAV segments, crash recovery | done |
+| 2 | Local transcription with faster-whisper | in progress |
 | 3 | Study notes with an LLM (configurable model), Markdown/HTML export | planned |
 | 4+ | Live web UI, slide screenshots, automatic session detection | later |
 
@@ -28,9 +28,15 @@ Early work in progress. Windows only.
 
 ```powershell
 py -3.12 -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install -e ".[dev,cuda]"
 .venv\Scripts\python -m pytest
 ```
+
+The `cuda` extra installs cuBLAS 12 (`nvidia-cublas-cu12`, about 550 MB), the only CUDA
+library the transcription needs: no system-wide CUDA toolkit or cuDNN is required, only a
+recent NVIDIA driver. Leave it out (`".[dev]"`) on a machine without an NVIDIA GPU. The
+speech model (`large-v3-turbo`, about 1.6 GB) is downloaded on first use into the Hugging Face
+cache (`%USERPROFILE%\.cache\huggingface\hub`).
 
 Data is stored in `%LOCALAPPDATA%\StudyScribe` by default; override it with
 `--data-dir` or the `STUDYSCRIBE_DATA_DIR` environment variable.

@@ -35,6 +35,17 @@ SOUND_FLOOR_DB = -80.0
 DEVICE_POLL_S = 0.5
 REOPEN_RETRY_S = 0.5
 
+# Transcription. The alias "large-v3-turbo" is pinned to a repository and revision instead of
+# faster-whisper's own mapping: the repository it names now redirects to another one.
+DEFAULT_MODEL = "large-v3-turbo"
+PINNED_MODELS = {
+    "large-v3-turbo": (
+        "dropbox-dash/faster-whisper-large-v3-turbo",
+        "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+    ),
+}
+DEFAULT_COMPUTE_TYPE = "float16"
+
 DB_FILENAME = "app.db"
 AUDIO_SUBDIR = "audio"
 

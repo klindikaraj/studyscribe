@@ -474,3 +474,24 @@ Piece 5:
 - Piece 0: the test suite showed two step 1 timing assumptions that fail on a busy PC: Windows
   releases the locks of a killed process asynchronously, and the capture process can take more
   than 1.5 s to start. Both fixed; details in `docs/plan-recording.md`, Findings.
+- Piece 1 (2026-11-02), `scripts/transcribe_probe.py` on segment 10 (0:09:00-0:10:00) of the
+  copy, RTX 3060, float16:
+  - Installed: faster-whisper 1.2.1, ctranslate2 4.8.4, nvidia-cublas-cu12 12.9.2.10 (+ nvrtc
+    12.9.86), onnxruntime 1.31.1, av 19.0.2, huggingface-hub 2.4.0. With only the preloaded
+    cuBLAS DLLs the GPU works: the CUDA runtime is linked statically and sm_86 is supported
+    (both assumptions confirmed). ctranslate2 offers float16, bfloat16, int8_float16 and more.
+  - `model.bin`: 1,617,884,929 bytes, SHA-256 `e76620f8…c018da`, equal to the hash published at
+    the pinned revision. The repository history shows mobiuslabsgmbh and dropbox-dash are the
+    same repository (renamed): `model.bin` was uploaded on 2024-10-08 (commit 0c94664) and is
+    unchanged since; the only later commit (0a363e9, 2025-11-05) edits the README. Download
+    took 171 s.
+  - Model load 1.9-2.2 s; VRAM +2.1 GB after loading, peak +2.35 GB while transcribing (3.4 of
+    12 GB in use, 1.06 GB before).
+  - 60 s transcribed in 2.36 s cold, 2.06 s warm (25-29x real time). On 3 h that would be about
+    6 minutes; longer windows should do better (less per-call overhead): measured in piece 5.
+  - Language: en with probability 1.00 (VAD kept 56.1 of 60 s).
+  - Text accurate; "Beau" came out as "bow". The last segment ends with "here we are a sign":
+    "assigning" cut by the end of the file, which is the case continuous reading avoids. Its
+    avg_logprob (-0.52) and lowest word probability (0.28) are the worst of the minute.
+  - Hugging Face warns that symlinks are unavailable (no developer mode) and copies files:
+    harmless, as expected.
