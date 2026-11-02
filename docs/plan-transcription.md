@@ -568,3 +568,18 @@ Piece 5:
     "variable" and doubled words. Decision: hints stay off by default, and the session title
     and course do not become automatic hints. `--hints` remains for experiments.
   - Markdown paragraphs now end after at most 60 s (user's request).
+- Piece 6 (2026-11-02), Italian: a copy (`it-copy`, hashes equal) of session
+  `20261102-173400-e04c56` (0:19:59, a PyTorch tutorial in Italian with many English terms):
+  - Language: it 1.00 on 180 s of speech (en 0.00). `--language it` gives a byte-identical
+    `.srt`.
+  - 0:19:59 in 49 s from launch (28x; a 20 minute session pays the model load and detection
+    over less audio). 241 segments, 0 dropped, longest 9.6 s; worst metrics avg_logprob -0.13,
+    compression 1.79, mean word probability 0.84.
+  - The lecture ends at 0:18:07; the last ~2 minutes are digital silence (-180 dBFS) until
+    Ctrl+C: nothing transcribed there. The real Italian outro ("Vi lascio il link in descrizione
+    e vi ringrazio per aver seguito questo video.") is kept: it is not a known phrase.
+  - English terms inside Italian come out mostly right: PyTorch, tensore/tensori, layer,
+    learning rate, loss, forward pass, bias, Adam, dataset, matplotlib, pyplot, scatter, relu,
+    Linear, Weight. Suspect: "Da PyTorch.neuralNetwork peschiamo la classe Linear" (0:06:30,
+    probably `torch.nn`), "YPRED" (0:14:01, `y_pred`), "col metodo di TEC" (0:14:08, probably
+    `detach`): code identifiers read aloud are the weak spot.

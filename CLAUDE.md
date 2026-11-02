@@ -26,9 +26,11 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: step 1 done; its acceptance test (`docs/manual-test-recording.md`, section C:
-3 h recording) passed on 2026-10-30, results in `docs/plan-recording.md`. Step 2 is next and
-has no plan yet: plan it first.
+Current state: steps 1 and 2 done. Step 1's acceptance test (`docs/manual-test-recording.md`,
+section C: 3 h recording) passed on 2026-10-30. Step 2 (plan and findings:
+`docs/plan-transcription.md`) passed its acceptance test on the same 3 h recording on
+2026-11-02 (`docs/manual-test-transcription.md`, section C); the Italian check (section D) is
+awaiting the user's listening. Step 3 is next and has no plan yet: plan it first.
 
 ## Architecture principles
 
@@ -77,12 +79,38 @@ Full agreed plan, including test hardware and open assumptions: `docs/plan-recor
   session IDs look like `20261028-142301-3f9a2c` (sortable, readable).
 - Migrations: Python list applied in order, tracked with `PRAGMA user_version`, one transaction each.
 
+## Step 2 design (transcription)
+
+Full agreed plan, findings and test results: `docs/plan-transcription.md`.
+
+- `studyscribe transcribe <id>` on a recorded session, local faster-whisper (`large-v3-turbo`,
+  float16, pinned to `dropbox-dash/faster-whisper-large-v3-turbo@0a363e9`). Only cuBLAS 12 is
+  needed (the `cuda` extra); `transcribe/cuda.py` preloads its DLLs because ctranslate2's
+  `LoadLibraryA` would not find them. No cuDNN.
+- The session is read as one signal (`audio/reader.py`) and processed in windows of up to 5 min
+  cut in pauses (VAD), never at file boundaries; times are mapped to the session timeline
+  (`gap_ms` is not used).
+- Level normalisation only on the float copy fed to VAD and Whisper (towards -20 dBFS, 0..+30 dB,
+  never pushes a sample above -1 dBFS); WAV files are opened read-only.
+- Language: VAD first, then the average of up to six 30 s chunks of speech; no speech = language
+  NULL, never a guess from silence. `--language` forces it.
+- Decoding: sequential (not batched), `vad_filter`, `word_timestamps`, no conditioning on
+  previous text, OpenAI's long-form thresholds. Segments over 12 s are split at sentence ends.
+  Filters (`transcribe/filters.py`) mark segments as dropped instead of deleting them.
+- Hints are off by default: the A/B test showed them inserting repeated sentences.
+- Schema v2: `transcription_runs` + `transcript_segments`. Committed window by window; a run
+  becomes the session's transcript only when done, replacing the old one in one transaction.
+  `sessions.status` is not touched by transcription. Lock: byte 2 of `session.lock`; recovery
+  marks runs whose process died as `interrupted`, and the same command resumes them.
+- Exports in `<session>/exports/`: `transcript.srt`, `transcript.md`, `transcript-dropped.txt`,
+  and `audio.flac` (`export --audio`, lossless, same timeline).
+
 ## Layout
 
 ```
 src/studyscribe/
-  cli.py              `studyscribe record|sessions|recover` (also `python -m studyscribe`):
-                      live status line, recovery first, owner recovery if the capture dies
+  cli.py              `studyscribe record|transcribe|export|sessions|recover` (also
+                      `python -m studyscribe`): live status/progress lines, recovery first
   config.py           data directory resolution and shared settings
   recording.py        RecorderHandle: parent side of the capture process (start/events/stop/kill)
   session.py          new_session (parent, owner lock) and SessionSink (capture process: capture
@@ -90,6 +118,7 @@ src/studyscribe/
   recovery.py         recover_all / recover_session: repair abandoned sessions
   verify.py           checks on a recorded session: manifest vs files, where the sound is
   audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
+  audio/reader.py     SessionAudio: a session's segments as one read-only int16 signal
   audio/timeline.py   TimelineAligner: packets -> gap-free timeline aligned to the clock (pure)
   audio/devices.py    DefaultOutputMonitor: default output endpoint ID through COM (ctypes)
   audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop (device
@@ -102,12 +131,29 @@ src/studyscribe/
   db/repo.py          queries on courses, sessions, audio_segments
   system/power.py     keep_system_awake (SetThreadExecutionState)
   system/locks.py     ByteLock: one-byte file lock released by the OS when the process dies
+                      (asynchronously on Windows: acquire(wait_s=...) when the holder is dead)
+  transcribe/engine.py    Transcriber protocol, AsrSegment/AsrWord, TranscriberError
+  transcribe/whisper.py   FasterWhisperTranscriber (only module importing faster_whisper),
+                          GPU error messages
+  transcribe/cuda.py      preload of cuBLAS from the nvidia-cublas-cu12 wheel (Windows)
+  transcribe/vad.py       Silero VAD wrapper (speech spans, pause spans)
+  transcribe/levels.py    normalisation of the ASR copy (pure)
+  transcribe/windows.py   window cuts in pauses (pure)
+  transcribe/language.py  language from speech chunks (pure)
+  transcribe/segments.py  TranscriptSegment, session-time mapping, split of long segments
+  transcribe/filters.py   anti-hallucination rules (pure)
+  transcribe/pipeline.py  detect_language, transcribe_windows (no database)
+  transcribe/runner.py    transcribe_session: checks, lock, run lifecycle, resume (database)
+  transcribe/export.py    srt / md / dropped list / audio.flac
 tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
 scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --session "Title",
                            --recover, --silence-limit SECONDS
 scripts/manual_recording_test.py   guided manual test: media key for play/pause/resume (or
                            --manual), unplug/replug, kill, checks; --check SESSION_ID
+scripts/transcribe_probe.py        GPU probe on one segment (model hash, timings, VRAM), or the
+                           whole pipeline on a stretch: --from/--to [--no-normalize] [--hints]
 docs/manual-test-recording.md      manual checklist, including the 3 h acceptance test
+docs/manual-test-transcription.md  transcription checklist, acceptance test and Italian check
 ```
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
@@ -117,6 +163,8 @@ runs. In-process loop tests use `FakeClock` + `ClockedSource` (packets follow th
 `tests/conftest.py` has the `data_dir`, `db` and `start_session` fixtures (`start_session`
 releases the owner lock after the test). Tests that start a capture process must kill it in a
 `finally`, or a failed assertion leaves pytest waiting for the process forever.
+Transcription tests use `FakeTranscriber` and the energy VAD `loud_spans` (tests/fakes.py) with
+small windows; tests marked `gpu` load the real model and are skipped unless `pytest -m gpu`.
 
 ## Data directory
 
@@ -126,16 +174,22 @@ Default `%LOCALAPPDATA%\StudyScribe`, never relative to the working directory. O
 ```
 <data>/app.db
 <data>/sessions/<session_id>/audio/000001.wav …
+<data>/sessions/<session_id>/exports/transcript.srt, transcript.md, transcript-dropped.txt, audio.flac
 ```
+
+The speech model lives in the Hugging Face cache (`%USERPROFILE%\.cache\huggingface\hub`),
+shared by all data directories.
 
 ## Commands
 
 ```powershell
 py -3.12 -m venv .venv                          # create the venv
-.venv\Scripts\python -m pip install -e ".[dev]" # install (ask first)
-.venv\Scripts\python -m pytest                  # run tests
+.venv\Scripts\python -m pip install -e ".[dev,cuda]" # install (ask first)
+.venv\Scripts\python -m pytest                  # run tests (-m gpu: tests with the real model)
 .venv\Scripts\studyscribe --help                # CLI
 .venv\Scripts\studyscribe record --title "Lecture 3" --course "Calculus"   # Ctrl+C to stop
+.venv\Scripts\studyscribe transcribe SESSION_ID  # transcribe (--language it, --restart)
+.venv\Scripts\studyscribe export SESSION_ID --audio   # rewrite exports, join audio.flac
 .venv\Scripts\studyscribe sessions               # list (recovers abandoned sessions first)
 .venv\Scripts\studyscribe recover                # recovery on demand
 .venv\Scripts\python scripts\capture_probe.py --seconds 60   # real-hardware capture probe

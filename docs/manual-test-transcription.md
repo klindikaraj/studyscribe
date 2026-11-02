@@ -63,4 +63,25 @@ starts at 4:31 in the video).
 - The pause: the last segment before it ends at about 0:29:32 ("So I'm going to do my name
   equals"), the next starts at 0:34:46 ("And then my string is going to equal..."); nothing
   kept or dropped in between.
-- Listening by the user: pending.
+- Listening by the user (2026-11-02, VLC with `audio.flac` and `transcript.srt`): points 1-5
+  correct; point 6 is spoken for real (the lecturer looks at three arrays), so it is right to
+  keep it. Accepted.
+
+## D. Italian
+
+A lecture in Italian recorded with `studyscribe record` (here: `it-copy`, session
+`20261102-173400-e04c56`, 0:19:59, a PyTorch tutorial in Italian). Transcribe with the
+language detected, then with `--language it`; listen to a few points.
+
+Result (2026-11-02): detected `it` 1.00 on 180 s of speech; `--language it` gives the same
+`.srt`; 241 segments, 0 dropped; 49 s in all. Points to listen to:
+
+| # | Timeline | WAV | Transcript | Why |
+|---|---|---|---|---|
+| 1 | 0:01:55 | `000002.wav` at 55 s | "forward pass, consiste nel fornire un input al modello per ottenere un output. ... nel secondo step, detto calcolo dell'errore o loss, viene confrontato l'output previsto con..." | English terms in Italian |
+| 2 | 0:05:07 | `000006.wav` at 7 s | "Dal popolarissimo package per creare grafici matplotlib importiamo il modulo pyplot che offre la funzione scatter utile a creare un grafico a dispersione." | library names |
+| 3 | 0:06:30 | `000007.wav` at 30 s | "Da PyTorch.neuralNetwork peschiamo la classe Linear." | suspect: probably `torch.nn` |
+| 4 | 0:11:05 | `000012.wav` at 5 s | "Uno dei più usati ed apprezzati si chiama Adam ... eta è la velocità di apprendimento o learning rate." | terms |
+| 5 | 0:14:01 | `000015.wav` at 1 s | "Occhio che su YPRED sono presenti sì gli output, ma anche dei dati relativi ai gradienti ... stacchiamoli col metodo di TEC per plottare solo gli output." | suspect: `y_pred`, `detach` |
+
+Listening by the user: pending.
