@@ -289,7 +289,8 @@ The last two rules are assumptions to validate on the 3 h recording.
   `--hints "Learn JavaScript - Full Course for Beginners. JavaScript, const, let, typeof, NaN, array, object"`.
   Compare the texts (technical terms above all), look for hint words where they are not spoken
   and for anything inside the pause. Then decide whether the session title and course become
-  automatic hints.
+  automatic hints. Decided in piece 5: they do not (hints inserted repeated sentences, see
+  Findings).
 
 ## GPU errors
 
@@ -418,7 +419,8 @@ Done: 2:57:34 in 4:31 (39x real time), 2140 segments, 12 dropped (see exports/tr
   word boundaries. UTF-8.
 - `transcript.md`: a header (title, course, date, duration, language and how it was chosen,
   model), then paragraphs starting with `[H:MM:SS]`; a new paragraph after a pause of 3 s or
-  more, or after about 90 s. One line explains how to find a point in the audio.
+  more, or after about 60 s (90 s at first; shortened at the user's request after reading the
+  3 h transcript). One line explains how to find a point in the audio.
 - `transcript-dropped.txt`: every dropped segment with its time, rule, metrics and text.
 - `audio.flac` (`export --audio`): the session's segments joined in order, i.e. the same samples
   and the same timeline as the transcript. The `.srt` plays against it in VLC, and any time `t`
@@ -545,3 +547,24 @@ Piece 5:
   segments (tested on a full 60 s segment plus a short last one). The transcript starts at
   0:00:09 with the end of the video's first sentence ("course you are looking for. My name is
   Beau Karnes..."): the recording began a few seconds into the video.
+- Piece 5 (2026-11-02), acceptance test on the copy (details and the points to listen to in
+  `docs/manual-test-transcription.md`, section C):
+  - Total time for 2:57:34: 4 min 51 s from launching `transcribe --restart` to the last export
+    (model load 3.7 s), 37x real time; 1415 segments, 0 dropped. VRAM as in piece 1.
+  - The pause: nothing between 0:29:32 and 0:34:46, kept or dropped.
+  - Offset of the recording from the video: about +2 s before the pause, about +5 min 14 s
+    after it (consistent on three chapters).
+  - Filters: the real metrics stay far from every threshold (no_speech_prob always 0.000, as
+    the VAD sends only speech; avg_logprob at worst -0.68 against -1.0; compression ratio at
+    worst 2.25 against 2.4; mean word probability at worst 0.70 against 0.35; no known phrase,
+    no equal neighbours), so 0 dropped reflects clean audio. A synthetic test runs every rule
+    through the whole chain (engine, pipeline, database, exports) and each one drops what it
+    should (`tests/test_filters_pipeline.py`).
+  - Hints A/B on 0:27-0:37, 1:00-1:10 and 2:47-2:57: 2.2-2.8% of the words change. Hints fix
+    some terms ("cost" -> "const", "object on freeze" -> "object dot freeze", "console that
+    log" -> "console dot log") but insert repetitions of earlier sentences where they are not
+    spoken: "Hello, our name is, and this is the second sentence." at 0:29:17 (said 15 s
+    earlier), "This is an object. And right now, this is an object." at 2:50:42, plus stray
+    "variable" and doubled words. Decision: hints stay off by default, and the session title
+    and course do not become automatic hints. `--hints` remains for experiments.
+  - Markdown paragraphs now end after at most 60 s (user's request).

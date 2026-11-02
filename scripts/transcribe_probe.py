@@ -130,6 +130,7 @@ def main() -> int:
                         help="pipeline mode: transcribe the session from here (continuous "
                         "reading, normalisation, windows, filters) instead of one segment")
     parser.add_argument("--to", dest="end", metavar="H:MM:SS", help="pipeline mode: up to here")
+    parser.add_argument("--hints", metavar="TEXT", help="pipeline mode: hints for the model")
     parser.add_argument("--no-normalize", action="store_true",
                         help="pipeline mode: feed the audio as recorded")
     args = parser.parse_args()
@@ -232,7 +233,7 @@ def pipeline_mode(args) -> int:
     started = time.perf_counter()
     engine = FasterWhisperTranscriber.load(args.model, args.compute_type, args.device)
     print(f"Model {engine.model} loaded in {time.perf_counter() - started:.1f} s; "
-          f"normalisation {'on' if normalize_audio else 'off'}")
+          f"normalisation {'on' if normalize_audio else 'off'}; hints {args.hints!r}")
     language = args.language
     if language is None:
         started = time.perf_counter()
@@ -249,7 +250,7 @@ def pipeline_mode(args) -> int:
         language = guess.language
     started = time.perf_counter()
     for window in pipeline.transcribe_windows(audio, engine, language, start, end,
-                                              normalize_audio=normalize_audio):
+                                              normalize_audio=normalize_audio, hints=args.hints):
         print(f"--- window {clock(window.start_frame / 16_000)} -> "
               f"{clock(window.end_frame / 16_000)}"
               + ("" if window.cut_in_pause else " (cut outside a pause)"))

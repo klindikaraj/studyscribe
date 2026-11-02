@@ -32,7 +32,7 @@ CUE_MAX_CHARS = 2 * LINE_CHARS
 CUE_MAX_MS = 7_000
 # Markdown paragraphs: a new one after a pause this long, or once a paragraph lasts this long.
 PARAGRAPH_PAUSE_MS = 3_000
-PARAGRAPH_MAX_MS = 90_000
+PARAGRAPH_MAX_MS = 60_000
 AUDIO_BLOCK = SEGMENT_SECONDS * SAMPLE_RATE  # samples read and encoded at a time
 
 

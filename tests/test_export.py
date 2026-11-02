@@ -59,7 +59,7 @@ def test_markdown_paragraphs_and_header() -> None:
 def test_long_speech_is_cut_into_paragraphs() -> None:
     segments = [seg(i * 5_000, i * 5_000 + 4_900, f"s{i}.") for i in range(40)]  # 200 s, no pause
     starts = [start for start, _ in export.paragraphs(segments)]
-    assert starts == [0, 90_000, 180_000]
+    assert starts == [0, 60_000, 120_000, 180_000]
 
 
 def test_dropped_list() -> None:
