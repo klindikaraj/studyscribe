@@ -230,6 +230,23 @@ Models: `large-v3-turbo` maps to `dropbox-dash/faster-whisper-large-v3-turbo` at
 revision; other names go to faster-whisper's own list. `--compute-type` (default float16) and
 `--device` (default cuda) are passed through.
 
+## Long segments (`transcribe/segments.py`)
+
+Added in piece 3, at the user's request after piece 2: Whisper sometimes returns one segment of
+20-30 s, mostly right after a window starts (seen: 1:24:38-1:24:59, 21 s, and 1:29:24-1:29:54,
+30 s). Every transcript segment is a reference the notes of step 3 link to, so a 30 s segment
+makes the link imprecise.
+
+- Before filtering and storing, a segment longer than 12 s is split at word boundaries with its
+  word timestamps: each piece ends at the last sentence end (`.`, `?`, `!`) that keeps it within
+  12 s, else at the last clause end (`,`, `;`, `:`), else at the widest pause between words. A
+  sentence end less than 2 s into a piece is not used (no scraps such as "Okay.").
+- Why 12 s: about two spoken sentences (30 words at 150 words per minute) and the upper end of
+  Whisper's usual 3-10 s segments, so ordinary segments stay whole and a link lands within a
+  sentence or two of what it cites.
+- The per-window metrics (`avg_logprob`, `no_speech_prob`, `compression_ratio`) are copied to
+  every piece; the filters then judge each piece.
+
 ## Anti-hallucination filters (`transcribe/filters.py`)
 
 Pure functions on the segments of a window plus the last kept segments before it. A dropped
@@ -511,3 +528,15 @@ Piece 5:
   - Across the pause (0:29:00-0:35:30): nothing between 0:29:32.4 and 0:34:46.3, the window cut
     fell inside the pause (0:33:45).
   - While testing, the level neighbourhood went from ±30 s to ±10 s (see Level normalisation).
+- Piece 3 (2026-11-02):
+  - Long segments split on 1:20-1:30: 1:24:38-1:24:59 (21 s) became pieces of 4.3, 8.6 and
+    8.2 s, 1:29:24-1:29:54 (30 s) pieces of 11.8, 11.3 and 5.6 s, all ending at sentence ends.
+  - Real CLI run on the copy, killed with `taskkill /F /T` after 90 s at 0:52:48 (29%):
+    `sessions` recovered the run (`interrupted 29%`); a second attempt was ended right after it
+    resumed (by a PowerShell `Select-Object -First`, unintended) and stayed at 29%; the third
+    resumed at 0:52:48 and finished: exit code 0, 1415 segments, none longer than 12 s, no
+    overlaps, no equal neighbours, nothing in the pause, the resume point in a 4.6 s pause
+    between two sentences. 4 min 49 s of processing in all (37x real time), not a clean timing:
+    that is piece 5.
+  - The final line of a resumed run first read "2:57:34 in 0:03:27", the time of the last
+    attempt only; it now says what this attempt did and gives the total processing time.

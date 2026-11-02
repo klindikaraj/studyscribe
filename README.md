@@ -45,7 +45,8 @@ Data is stored in `%LOCALAPPDATA%\StudyScribe` by default; override it with
 
 ```powershell
 .venv\Scripts\studyscribe record --title "Lecture 3" --course "Calculus"   # Ctrl+C to stop
-.venv\Scripts\studyscribe sessions    # list sessions with status and duration
+.venv\Scripts\studyscribe transcribe SESSION_ID   # local transcription on the GPU
+.venv\Scripts\studyscribe sessions    # list sessions with status, duration, transcript
 .venv\Scripts\studyscribe recover     # repair sessions left behind by a crash
 ```
 
@@ -54,6 +55,11 @@ unplugged or replugged, and stops by itself after 30 minutes without sound
 (`--silence-limit MINUTES`, 0 = never). Audio is written as 60-second WAV
 segments, so a crash loses at most a fraction of a second; abandoned sessions
 are repaired automatically the next time `record` or `sessions` runs.
+
+`transcribe` detects the language on the first minutes of speech (`--language en` forces it)
+and stores the transcript in the database. If it is interrupted (Ctrl+C, a crash, the GPU
+running out of memory), running it again resumes where it stopped; transcribing a session
+again replaces its transcript.
 
 ## A note on use
 

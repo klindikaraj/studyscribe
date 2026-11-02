@@ -23,6 +23,9 @@ Emit = Callable[..., None]
 LOCK_FILENAME = "session.lock"
 OWNER_LOCK_BYTE = 0
 CAPTURE_LOCK_BYTE = 1
+# Held by the process transcribing the session: a 'running' run whose lock is free was left
+# behind by a process that died.
+TRANSCRIBE_LOCK_BYTE = 2
 
 
 def session_lock(data_dir: Path, session_id: str, byte: int) -> ByteLock:

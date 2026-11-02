@@ -26,7 +26,12 @@ from studyscribe.audio.wav import ForeignWavError, repair_wav_header
 from studyscribe.config import AUDIO_SUBDIR, SEGMENT_FRAMES, session_dir
 from studyscribe.db import repo
 from studyscribe.db.connection import transaction
-from studyscribe.session import CAPTURE_LOCK_BYTE, OWNER_LOCK_BYTE, session_lock
+from studyscribe.session import (
+    CAPTURE_LOCK_BYTE,
+    OWNER_LOCK_BYTE,
+    TRANSCRIBE_LOCK_BYTE,
+    session_lock,
+)
 from studyscribe.system.locks import ByteLock
 
 RECOVERABLE = ("recording", "recorded", "interrupted")
@@ -181,3 +186,35 @@ def _without_folder(conn: sqlite3.Connection, session: sqlite3.Row) -> Recovered
 
 def _ms(frames: int, sample_rate: int) -> int:
     return frames * 1000 // sample_rate
+
+
+@dataclass
+class RecoveredRun:
+    run_id: int
+    session_id: str
+    done_ms: int
+    audio_ms: int
+
+
+def recover_transcriptions(conn: sqlite3.Connection, data_dir: Path) -> list[RecoveredRun]:
+    """Mark as 'interrupted' the 'running' transcription runs whose process is gone (their
+    session's transcription lock is free). The committed windows are kept, so the run can be
+    resumed; the session's previous transcript, if any, is untouched."""
+    results = []
+    for run in repo.list_runs_by_status(conn, "running"):
+        lock = session_lock(data_dir, run["session_id"], TRANSCRIBE_LOCK_BYTE)
+        try:
+            free = lock.acquire()
+        except OSError:  # no session folder: nobody can be transcribing it
+            free = True
+        try:
+            if not free:
+                continue  # still being transcribed
+            with transaction(conn):
+                repo.set_run_status(conn, run["id"], "interrupted",
+                                    run["error"] or "the transcribing process stopped")
+            results.append(RecoveredRun(run["id"], run["session_id"], run["done_ms"],
+                                        run["audio_ms"]))
+        finally:
+            lock.release()
+    return results

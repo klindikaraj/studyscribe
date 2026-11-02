@@ -20,8 +20,9 @@ def db(tmp_path: Path):
 
 
 def test_fresh_database_reaches_latest_version(db) -> None:
-    assert schema_version(db) == len(MIGRATIONS) == 1
-    assert {"courses", "sessions", "audio_segments"} <= tables(db)
+    assert schema_version(db) == len(MIGRATIONS) == 2
+    assert {"courses", "sessions", "audio_segments", "transcription_runs",
+            "transcript_segments"} <= tables(db)
 
 
 def test_connection_settings(db) -> None:
@@ -30,8 +31,8 @@ def test_connection_settings(db) -> None:
 
 
 def test_migrate_is_idempotent(db) -> None:
-    assert migrate(db) == 1
-    assert migrate(db) == 1
+    assert migrate(db) == 2
+    assert migrate(db) == 2
 
 
 def test_failed_migration_rolls_back_entirely(tmp_path: Path) -> None:

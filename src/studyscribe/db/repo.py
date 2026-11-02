@@ -115,3 +115,156 @@ def list_audio_segments(conn: sqlite3.Connection, session_id: str) -> list[sqlit
     return conn.execute(
         "SELECT * FROM audio_segments WHERE session_id = ? ORDER BY seq", (session_id,)
     ).fetchall()
+
+
+# --- transcription runs and segments -------------------------------------------------------------
+
+
+def create_run(
+    conn: sqlite3.Connection,
+    session_id: str,
+    engine: str,
+    model: str,
+    compute_type: str,
+    options_json: str,
+    audio_ms: int,
+    pass_: str = "final",
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO transcription_runs (session_id, pass, status, engine, model, compute_type,"
+        " options_json, audio_ms, started_at) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)",
+        (session_id, pass_, engine, model, compute_type, options_json, audio_ms, utc_now_iso()),
+    )
+    return cursor.lastrowid
+
+
+def get_run(conn: sqlite3.Connection, run_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM transcription_runs WHERE id = ?", (run_id,)).fetchone()
+
+
+def get_open_run(
+    conn: sqlite3.Connection, session_id: str, pass_: str = "final"
+) -> sqlite3.Row | None:
+    """The unfinished ('running' or 'interrupted') run of a session, if any."""
+    return conn.execute(
+        "SELECT * FROM transcription_runs WHERE session_id = ? AND pass = ? AND status <> 'done'",
+        (session_id, pass_),
+    ).fetchone()
+
+
+def get_done_run(
+    conn: sqlite3.Connection, session_id: str, pass_: str = "final"
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM transcription_runs WHERE session_id = ? AND pass = ? AND status = 'done'",
+        (session_id, pass_),
+    ).fetchone()
+
+
+def set_run_status(
+    conn: sqlite3.Connection, run_id: int, status: str, error: str | None = None
+) -> None:
+    conn.execute(
+        "UPDATE transcription_runs SET status = ?, error = ? WHERE id = ?", (status, error, run_id)
+    )
+
+
+def set_run_language(
+    conn: sqlite3.Connection,
+    run_id: int,
+    language: str | None,
+    source: str | None,
+    probs_json: str | None,
+) -> None:
+    conn.execute(
+        "UPDATE transcription_runs SET language = ?, language_source = ?, language_probs = ?"
+        " WHERE id = ?",
+        (language, source, probs_json, run_id),
+    )
+
+
+def delete_run(conn: sqlite3.Connection, run_id: int) -> None:
+    """Delete a run and (cascade) its segments."""
+    conn.execute("DELETE FROM transcription_runs WHERE id = ?", (run_id,))
+
+
+def add_transcript_window(
+    conn: sqlite3.Connection,
+    run_id: int,
+    segments: list[tuple],
+    done_ms: int,
+    processing_s: float,
+) -> None:
+    """Insert a window's segments and advance the run. `segments`: (start_ms, end_ms, text,
+    words_json, avg_logprob, no_speech_prob, compression_ratio, dropped). Call inside a
+    transaction, so the segments and the progress are committed together."""
+    conn.executemany(
+        "INSERT INTO transcript_segments (run_id, start_ms, end_ms, text, words_json,"
+        " avg_logprob, no_speech_prob, compression_ratio, dropped)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(run_id, *segment) for segment in segments],
+    )
+    conn.execute(
+        "UPDATE transcription_runs SET done_ms = ?, processing_s = processing_s + ? WHERE id = ?",
+        (done_ms, processing_s, run_id),
+    )
+
+
+def finish_run(conn: sqlite3.Connection, run_id: int) -> None:
+    """Make `run_id` the session's transcript, replacing the previous one. Call inside a
+    transaction: readers see the old transcript until the commit, then the new one."""
+    run = get_run(conn, run_id)
+    conn.execute(
+        "DELETE FROM transcription_runs WHERE session_id = ? AND pass = ? AND status = 'done'",
+        (run["session_id"], run["pass"]),
+    )
+    conn.execute(
+        "UPDATE transcription_runs SET status = 'done', error = NULL, finished_at = ?,"
+        " done_ms = audio_ms WHERE id = ?",
+        (utc_now_iso(), run_id),
+    )
+    conn.execute(
+        "UPDATE sessions SET asr_engine = ?, asr_model = ?, language = ? WHERE id = ?",
+        (run["engine"], run["model"], run["language"], run["session_id"]),
+    )
+
+
+def list_run_segments(
+    conn: sqlite3.Connection, run_id: int, include_dropped: bool = True
+) -> list[sqlite3.Row]:
+    where = "" if include_dropped else " AND dropped IS NULL"
+    return conn.execute(
+        f"SELECT * FROM transcript_segments WHERE run_id = ?{where} ORDER BY start_ms, id",
+        (run_id,),
+    ).fetchall()
+
+
+def list_transcript(
+    conn: sqlite3.Connection, session_id: str, include_dropped: bool = False
+) -> list[sqlite3.Row]:
+    """Segments of the session's current transcript (its done final run); kept ones only
+    unless `include_dropped`. Empty if the session has no transcript."""
+    run = get_done_run(conn, session_id)
+    return [] if run is None else list_run_segments(conn, run["id"], include_dropped)
+
+
+def list_runs_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM transcription_runs WHERE status = ? ORDER BY id", (status,)
+    ).fetchall()
+
+
+def transcript_states(conn: sqlite3.Connection) -> dict[str, str]:
+    """Session ID -> short transcript state for listings: the language of the done run ('no
+    speech' without one), or the open run's status and progress, which take precedence."""
+    states = {}
+    for row in conn.execute(
+        "SELECT session_id, status, language, done_ms, audio_ms FROM transcription_runs"
+        " WHERE pass = 'final' ORDER BY status = 'done' DESC, id"
+    ):
+        if row["status"] == "done":
+            states[row["session_id"]] = row["language"] or "no speech"
+        else:
+            percent = 100 * row["done_ms"] // max(row["audio_ms"], 1)
+            states[row["session_id"]] = f"{row['status']} {percent}%"
+    return states

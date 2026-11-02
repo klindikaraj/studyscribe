@@ -17,7 +17,7 @@ from studyscribe.transcribe import language as lang
 from studyscribe.transcribe.engine import Transcriber
 from studyscribe.transcribe.filters import apply_filters
 from studyscribe.transcribe.levels import normalize, to_float
-from studyscribe.transcribe.segments import TranscriptSegment, to_session
+from studyscribe.transcribe.segments import TranscriptSegment, split_long, to_session
 from studyscribe.transcribe.vad import PAUSE_VAD, SPEECH_VAD, Vad, speech_spans
 from studyscribe.transcribe.windows import MAX_WINDOW_S, SEARCH_S, Cut, choose_cut
 
@@ -113,10 +113,10 @@ def transcribe_windows(
             cut = Cut(end, True)
         window = Window(cursor, cut.frame, cut_in_pause=cut.in_pause)
         for asr in transcriber.transcribe(samples[: cut.frame - cursor], language, hints):
-            segment = to_session(asr, cursor)
-            window.segments.append(segment)
-            if on_segment is not None:
-                on_segment(segment)
+            for segment in split_long(to_session(asr, cursor)):
+                window.segments.append(segment)
+                if on_segment is not None:
+                    on_segment(segment)
         apply_filters(window.segments, context)
         context = (context + window.segments)[-CONTEXT_SEGMENTS:]
         yield window

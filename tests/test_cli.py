@@ -89,8 +89,8 @@ def test_sessions_lists_after_recovering(db, data_dir: Path, start_session) -> N
     text = out.getvalue()
     assert f"Recovered {old}: recording -> failed" in text
     lines = text.splitlines()
-    assert lines[1].split() == ["SESSION", "STATUS", "STARTED", "DURATION", "GAP", "COURSE",
-                                "TITLE"]
+    assert lines[1].split() == ["SESSION", "STATUS", "STARTED", "DURATION", "GAP", "TRANSCRIPT",
+                                "COURSE", "TITLE"]
     live_line = next(line for line in lines if line.startswith(live))
     assert "recording" in live_line and "Physics" in live_line
     assert lines[-1] == "2 session(s)"
