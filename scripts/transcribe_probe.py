@@ -3,6 +3,12 @@
 Usage:
     .venv\\Scripts\\python scripts\\transcribe_probe.py --data-dir PATH --session ID [--segment N]
         [--model large-v3-turbo] [--compute-type float16] [--device cuda] [--language en]
+    .venv\\Scripts\\python scripts\\transcribe_probe.py --data-dir PATH --session ID
+        --from 0:09:00 [--to 0:11:00] [--no-normalize] [--language en]
+
+The second form runs the whole step 2 pipeline on a stretch of the session instead: continuous
+reading across segments, normalisation, language detection on speech, windows cut in pauses,
+filters (dropped segments are shown as such).
 
 Prints library versions and what CUDA offers, downloads the model if needed (and checks
 model.bin against the hash published for the pinned revision), then times the model load and
@@ -120,7 +126,15 @@ def main() -> int:
     parser.add_argument("--compute-type", default=DEFAULT_COMPUTE_TYPE)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--language", default=None, help="default: detected")
+    parser.add_argument("--from", dest="start", metavar="H:MM:SS",
+                        help="pipeline mode: transcribe the session from here (continuous "
+                        "reading, normalisation, windows, filters) instead of one segment")
+    parser.add_argument("--to", dest="end", metavar="H:MM:SS", help="pipeline mode: up to here")
+    parser.add_argument("--no-normalize", action="store_true",
+                        help="pipeline mode: feed the audio as recorded")
     args = parser.parse_args()
+    if args.start is not None:
+        return pipeline_mode(args)
 
     wav = session_dir(resolve_data_dir(args.data_dir), args.session) / "audio" / (
         f"{args.segment:06d}.wav"
@@ -188,6 +202,66 @@ def main() -> int:
         print(f"[{clock(offset + s.start)} -> {clock(offset + s.end)}] {s.text.strip()}")
         print(f"    no_speech {s.no_speech_prob:.2f}  avg_logprob {s.avg_logprob:.2f}  "
               f"compression {s.compression_ratio:.2f}  words {len(s.words)}, lowest p {low:.2f}")
+    return 0
+
+
+def parse_clock(text: str) -> float:
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    return seconds
+
+
+def pipeline_mode(args) -> int:
+    """The step 2 pipeline on [--from, --to) of the session, with the real model and VAD."""
+    from contextlib import closing
+
+    from studyscribe.audio.reader import SessionAudio
+    from studyscribe.config import db_path
+    from studyscribe.db.connection import connect
+    from studyscribe.transcribe import language as lang
+    from studyscribe.transcribe import pipeline
+    from studyscribe.transcribe.whisper import FasterWhisperTranscriber
+
+    data_dir = resolve_data_dir(args.data_dir)
+    with closing(connect(db_path(data_dir))) as conn:  # read only: no migration, no recovery
+        audio = SessionAudio.from_session(conn, data_dir, args.session)
+    start = int(parse_clock(args.start) * 16_000)
+    end = audio.total_frames if args.end is None else int(parse_clock(args.end) * 16_000)
+    normalize_audio = not args.no_normalize
+    started = time.perf_counter()
+    engine = FasterWhisperTranscriber.load(args.model, args.compute_type, args.device)
+    print(f"Model {engine.model} loaded in {time.perf_counter() - started:.1f} s; "
+          f"normalisation {'on' if normalize_audio else 'off'}")
+    language = args.language
+    if language is None:
+        started = time.perf_counter()
+        guess = pipeline.detect_language(audio, engine, start, end,
+                                         normalize_audio=normalize_audio)
+        took = time.perf_counter() - started
+        if guess is None:
+            print(f"Language: none (no speech in the range) [{took:.1f} s]")
+            return 0
+        print(f"Language: {guess.language} on {guess.speech_s:.0f} s of speech "
+              f"({lang.describe(guess)}) [{took:.1f} s]")
+        if lang.doubt(guess):
+            print(f"  warning: {lang.doubt(guess)}")
+        language = guess.language
+    started = time.perf_counter()
+    for window in pipeline.transcribe_windows(audio, engine, language, start, end,
+                                              normalize_audio=normalize_audio):
+        print(f"--- window {clock(window.start_frame / 16_000)} -> "
+              f"{clock(window.end_frame / 16_000)}"
+              + ("" if window.cut_in_pause else " (cut outside a pause)"))
+        for s in window.segments:
+            mark = f"  DROPPED ({s.dropped})" if s.dropped else ""
+            p = s.mean_word_probability
+            print(f"[{clock(s.start_ms / 1000)} -> {clock(s.end_ms / 1000)}] {s.text}{mark}")
+            print(f"    no_speech {s.no_speech_prob:.2f}  avg_logprob {s.avg_logprob:.2f}  "
+                  f"words {len(s.words)}, mean p {p if p is None else round(p, 2)}")
+    took = time.perf_counter() - started
+    seconds = (end - start) / 16_000
+    print(f"Transcribed {seconds:.0f} s in {took:.1f} s ({seconds / took:.0f}x)")
     return 0
 
 

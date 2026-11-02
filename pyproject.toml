@@ -39,5 +39,5 @@ packages = ["src/studyscribe"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not gpu'"
 markers = ["gpu: needs an NVIDIA GPU and the downloaded model (run with -m gpu)"]

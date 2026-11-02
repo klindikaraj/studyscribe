@@ -264,3 +264,58 @@ class ScriptedDefaultOutput:
 
     def close(self) -> None:
         self.closed = True
+
+
+# --- transcription -------------------------------------------------------------------------------
+
+
+def loud_spans(audio: np.ndarray, threshold_db: float = -40.0, frame: int = 800,
+               **_options) -> list[tuple[int, int]]:
+    """Energy VAD for tests: [start, end) runs of 50 ms frames louder than `threshold_db`."""
+    n = audio.size // frame
+    if n == 0:
+        return []
+    rms = np.sqrt(np.mean(audio[: n * frame].astype(np.float64).reshape(n, frame) ** 2, axis=1))
+    loud = 20 * np.log10(np.maximum(rms, 1e-12)) > threshold_db
+    spans, start = [], None
+    for i, is_loud in enumerate(list(loud) + [False]):
+        if is_loud and start is None:
+            start = i
+        elif not is_loud and start is not None:
+            spans.append((start * frame, i * frame))
+            start = None
+    return spans
+
+
+class FakeTranscriber:
+    """Engine for tests: one segment per loud run of the audio it gets (text from `text`, by
+    running count), plus scripted language probabilities. Records what it was given."""
+
+    engine = "fake"
+    model = "fake-model"
+    compute_type = "none"
+
+    def __init__(self, language_probabilities: dict[str, float] | None = None,
+                 text: Callable[[int], str] | None = None) -> None:
+        self._probabilities = language_probabilities or {"en": 0.9, "it": 0.1}
+        self._text = text or (lambda i: f"words {i}")
+        self.detected: list[int] = []  # sizes of the chunks given to language detection
+        self.windows: list[tuple[int, str, str | None]] = []  # (samples, language, hints)
+        self._count = 0
+
+    def options(self) -> dict:
+        return {"engine": self.engine, "model": self.model}
+
+    def language_probabilities(self, speech: np.ndarray) -> dict[str, float]:
+        self.detected.append(speech.size)
+        return dict(self._probabilities)
+
+    def transcribe(self, audio: np.ndarray, language: str, hints: str | None = None):
+        from studyscribe.transcribe.engine import AsrSegment, AsrWord
+
+        self.windows.append((audio.size, language, hints))
+        for start, end in loud_spans(audio):
+            text = self._text(self._count)
+            self._count += 1
+            s, e = start / 16_000, end / 16_000
+            yield AsrSegment(s, e, text, (AsrWord(s, e, text, 0.9),), -0.2, 0.01, 1.2)

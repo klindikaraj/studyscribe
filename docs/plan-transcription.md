@@ -175,7 +175,8 @@ about -20 dBFS on the Realtek output and -40 dBFS on the monitor. Normalisation 
 float32 copy fed to the VAD and to Whisper; the WAV files stay as captured.
 
 - Frame level: RMS of 50 ms frames. Block level: 90th percentile of the frames above -70 dBFS
-  within ±30 s of each 10 s block.
+  within ±10 s of each 10 s block (±30 s, as first planned, left the first 30 s after a 20 dB
+  drop unboosted: the percentile stays on the louder side).
 - Gain towards -20 dBFS, limited to 0..+30 dB. A block whose level is below -60 dBFS gets 0 dB,
   so faint noise is not boosted into something the VAD or Whisper may take for speech.
 - No sample above -1 dBFS: each block's gain is capped by its own peak and by its neighbours'
@@ -495,3 +496,18 @@ Piece 5:
     avg_logprob (-0.52) and lowest word probability (0.28) are the worst of the minute.
   - Hugging Face warns that symlinks are unavailable (no developer mode) and copies files:
     harmless, as expected.
+- Piece 2 (2026-11-02), pipeline mode of the probe on the copy (real model and VAD):
+  - Language is detected only on speech: inside the pause (0:30:00-0:34:00) the result is "no
+    speech" and the language stays unknown, never a guess from silence (a plain call on the
+    silent segment 31 had answered "en 0.51" at random). On 0:09:00-0:11:00: en 1.00 on 116 s
+    of speech, in 1.7 s.
+  - Continuous reading completes the sentences cut at file ends: "here we are a sign" (end of
+    segment 10) becomes "And then here we are assigning a variable" across 0:10:00, and "If
+    that." (end of segment 88) becomes "If value is more than 10" across 1:28:00.
+  - Normalisation on 1:27:00-1:29:00 (monitor output, -39 dBFS): without it the first four
+    segments (1:27:00-1:27:25) have no punctuation or capitals and one segment runs 33 s
+    (1:28:21-1:28:54); with it punctuation and capitals are there from the first line and no
+    segment is longer than 9 s. The words are almost identical.
+  - Across the pause (0:29:00-0:35:30): nothing between 0:29:32.4 and 0:34:46.3, the window cut
+    fell inside the pause (0:33:45).
+  - While testing, the level neighbourhood went from ±30 s to ±10 s (see Level normalisation).
