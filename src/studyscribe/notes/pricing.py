@@ -60,7 +60,10 @@ def price_for(provider: str, model: str, on: date | None = None) -> Price | None
 
 
 def list_cost(provider: str, model: str, usage: Usage, on: date | None = None) -> float | None:
-    """Cost in USD at list price, or None for a model without a known price."""
+    """Cost in USD at list price, or None for a model without a known price. Local models
+    (Ollama) cost nothing."""
+    if provider == "ollama":
+        return 0.0
     price = price_for(provider, model, on)
     if price is None:
         return None

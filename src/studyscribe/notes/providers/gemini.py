@@ -58,6 +58,7 @@ class GeminiProvider:
         )
 
     def generate(self, request: LlmRequest) -> LlmResponse:
+        _require_thinking_effort(request)
         types = self._types
         config = types.GenerateContentConfig(
             system_instruction=request.system,
@@ -105,6 +106,9 @@ class GeminiProvider:
         model = self._call(lambda: self._client.models.get(model=self.model))
         return model.display_name or model.name or self.model
 
+    def close(self) -> None:
+        pass
+
     def _call(self, fn):
         try:
             return fn()
@@ -112,6 +116,12 @@ class GeminiProvider:
             raise
         except Exception as error:
             raise map_error(error) from None
+
+
+def _require_thinking_effort(request: LlmRequest) -> None:
+    if request.effort == "none":
+        raise BadRequest("Gemini cannot turn thinking off (effort none).",
+                         remedy="Use --effort low, medium or high with this provider.")
 
 
 # --- usage and errors (pure, tested without network) ---------------------------------------------

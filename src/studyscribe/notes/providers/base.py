@@ -15,9 +15,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-Effort = Literal["low", "medium", "high"]
-EFFORTS: tuple[Effort, ...] = ("low", "medium", "high")
-PROVIDERS = ("gemini", "anthropic")
+# "none" turns thinking off; only the local provider (Ollama) accepts it.
+Effort = Literal["none", "low", "medium", "high"]
+EFFORTS: tuple[Effort, ...] = ("none", "low", "medium", "high")
+PROVIDERS = ("ollama", "gemini", "anthropic")
+KEY_PROVIDERS = ("gemini", "anthropic")  # the providers that need an API key
 
 
 @dataclass(frozen=True)
@@ -45,12 +47,28 @@ class Usage:
 
 
 @dataclass(frozen=True)
+class Timings:
+    """Where the time of a local request went (Ollama reports it; the cloud providers do not)."""
+
+    load_s: float  # loading the model, 0 when it was already loaded
+    prefill_s: float  # reading the prompt
+    generate_s: float  # writing the answer
+
+    def prefill_rate(self, tokens: int) -> float | None:
+        return tokens / self.prefill_s if self.prefill_s > 0 and tokens else None
+
+    def generate_rate(self, tokens: int) -> float | None:
+        return tokens / self.generate_s if self.generate_s > 0 and tokens else None
+
+
+@dataclass(frozen=True)
 class LlmResponse:
     text: str
     usage: Usage
     model_version: str | None
     request_id: str | None
     duration_s: float
+    timings: Timings | None = None
 
 
 class LlmProvider(Protocol):
@@ -66,6 +84,10 @@ class LlmProvider(Protocol):
     def check(self) -> str:
         """Check the key and the model name without generating anything; returns the model's
         display name or ID."""
+
+    def close(self) -> None:
+        """Release what the provider holds (Ollama: unload the model from GPU memory). Never
+        raises; called in a `finally`."""
 
 
 # --- errors --------------------------------------------------------------------------------------
@@ -136,6 +158,16 @@ class Refused(LlmError):
 
 class Truncated(LlmError):
     """The output hit max_tokens: the JSON is incomplete."""
+
+
+class ContextTooLong(LlmError):
+    """The request does not fit the model's context window. Raised before sending when the
+    estimate says so, or when the server refuses it, or when the response shows that the input
+    may have been cut. Never retried: the caller has to send less."""
+
+    def __init__(self, message: str, *, tokens: int | None = None, **kwargs) -> None:
+        super().__init__(message, **kwargs)
+        self.tokens = tokens  # input tokens counted by the server, when known
 
 
 # --- key redaction -------------------------------------------------------------------------------

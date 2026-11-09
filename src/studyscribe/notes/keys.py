@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from studyscribe.notes.providers.base import PROVIDERS, LlmError, MissingKey, register_secret
+from studyscribe.notes.providers.base import KEY_PROVIDERS, LlmError, MissingKey, register_secret
 
 SERVICE = "studyscribe"
 ENV_VARS = {
@@ -56,8 +56,8 @@ def default_store() -> KeyStore:
 
 
 def _check_provider(provider: str) -> None:
-    if provider not in PROVIDERS:
-        raise ValueError(f"unknown provider {provider!r}")
+    if provider not in KEY_PROVIDERS:
+        raise ValueError(f"provider {provider!r} takes no API key")
 
 
 def _store_error(action: str, error: Exception) -> KeyStoreError:

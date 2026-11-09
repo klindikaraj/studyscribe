@@ -46,6 +46,7 @@ class ClaudeProvider:
         self._client = anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=TIMEOUT_S)
 
     def generate(self, request: LlmRequest) -> LlmResponse:
+        _require_thinking_effort(request)
         schema = self._anthropic.transform_schema(request.schema)
         started = time.perf_counter()
 
@@ -85,6 +86,9 @@ class ClaudeProvider:
         info = self._call(lambda: self._client.models.retrieve(self.model))
         return info.display_name or info.id
 
+    def close(self) -> None:
+        pass
+
     def _call(self, fn):
         try:
             return fn()
@@ -92,6 +96,12 @@ class ClaudeProvider:
             raise
         except Exception as error:
             raise map_error(error, self._anthropic) from None
+
+
+def _require_thinking_effort(request: LlmRequest) -> None:
+    if request.effort == "none":
+        raise BadRequest("Claude cannot turn thinking off (effort none).",
+                         remedy="Use --effort low, medium or high with this provider.")
 
 
 # --- usage and errors (pure, tested without network) ---------------------------------------------

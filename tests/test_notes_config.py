@@ -1,5 +1,7 @@
 import io
 
+import pytest
+
 from fakes import DictKeyStore
 
 from studyscribe import cli
@@ -29,7 +31,8 @@ def run(argv, store, *, secret=KEY, error=None, environ=None):
         return StubProvider(error)
 
     code = cli.cmd_config(args, out, store=store, environ=environ or {},
-                          read_secret=lambda prompt: secret, make=make)
+                          read_secret=lambda prompt: secret, make=make,
+                          ollama_status=lambda: ["ollama: version 9.9 (fake)"])
     return code, out.getvalue(), made
 
 
@@ -93,4 +96,17 @@ def test_delete_key():
 def test_credential_store_failure_is_a_clean_message():
     code, text, _ = run(["show"], DictKeyStore(fail=True))
     assert code == 1
-    assert text.startswith("Error: Could not read from the Windows Credential Manager")
+    assert "\nError: Could not read from the Windows Credential Manager" in text
+
+
+def test_show_starts_with_the_local_provider():
+    code, text, _ = run(["show"], DictKeyStore())
+    assert code == 0
+    assert text.splitlines()[:2] == ["Default provider: ollama (qwen3.5:9b)",
+                                     "ollama: version 9.9 (fake)"]
+
+
+@pytest.mark.parametrize("action", ["set-key", "delete-key"])
+def test_ollama_takes_no_key(action):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["config", action, "ollama"])

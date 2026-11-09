@@ -145,8 +145,7 @@ OpenRouter or FreeLLMAPI later, but it would not be the right way to talk to Oll
 No new package: plain HTTP with the standard library (`http.client`), streaming NDJSON. Streaming
 gives a live progress line (tokens so far, tokens/s) and keeps Ctrl+C responsive during long
 generations. The docs list timing and token counts only for the non-streamed response; the
-final streamed chunk is expected to carry them too *(probe)*. If it does not, the provider
-uses `stream: false` with a long read timeout.
+final streamed chunk carries them too (verified with 0.40.15).
 
 The model's output is still validated with pydantic as for the cloud providers: the docs do not
 say whether the schema is enforced by constrained decoding, and they recommend repeating the
@@ -186,7 +185,8 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
 - Every request sets `options.num_ctx` explicitly. Default 32768, setting `ollama.num_ctx`. It
   stays the same for the whole run: a different `num_ctx` makes Ollama reload the model.
 - Budget per request: `num_ctx − num_predict − 512` tokens of margin. `num_predict` (output
-  cap): 6144 for map, 8192 for reduce.
+  cap): 6144 for map, 8192 for reduce with thinking off; 16384 for both with thinking on (a
+  15-minute block went past 6144 while still thinking).
 - Map blocks (10-15 min) are about 2.5-3.6k tokens of transcript plus about 2k of prompt: far
   inside the budget.
 - **Hierarchical reduce.** The single reduce on the 3 h lecture would take about 35-38k tokens
@@ -207,12 +207,11 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
      (default 2.5, conservative; then the lowest ratio measured on this model's past calls
      × 0.9). Over the budget → `ContextTooLong`, nothing sent. The pipeline sizes blocks and
      reduce groups from the same budget, so this only fires on a bug.
-  2. After the response: `prompt_eval_count + prompt_eval_cached_count + eval_count ≥ num_ctx`,
-     or input tokens below characters / 8 (implausibly few) → the response is discarded as
-     possibly truncated, with an error.
-  3. If `/api/chat` accepts a `truncate: false` option (the release notes of 0.40.16-rc0 mention
-     a truncation option for the OpenAI layer) *(probe)*, it is sent too, so Ollama itself
-     refuses instead of truncating.
+  2. After the response: `prompt_eval_count + eval_count ≥ num_ctx` (`prompt_eval_count`
+     already includes the cached tokens), or input tokens below characters / 8 (implausibly
+     few) → the response is discarded as possibly truncated, with an error.
+  3. Every request carries `"truncate": false` at the top level: Ollama then refuses a prompt
+     longer than the context with a 400 instead of cutting it (verified, see findings).
 
 ### GPU memory
 
@@ -247,7 +246,8 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
   for Qwen3; assumed for 3.5). With a fixed seed and the same input, Ollama is expected to give
   the same output on the same machine *(probe: two identical requests)*. If the probe shows
   repetition loops anyway, the table changes, not the code.
-- Whether Ollama honours `presence_penalty` with these models is not documented *(probe)*.
+- `presence_penalty` is not documented for these models, but Ollama accepts it without an
+  "invalid option" warning (verified); whether it has an effect is not measured.
 
 ### Estimates and speed (to be measured)
 
@@ -402,9 +402,13 @@ on every re-transcription. The code maps `S<n>` to the segment id and its `start
 ### Identifier corrections
 
 In the notes only; the transcript stays faithful to the audio. The prompt asks to write code read
-aloud in code form ("torch dot nn" → `torch.nn`, "ipsilon pred" → `y_pred`) and to fix a
-recognition error only when the context makes the word certain ("TEC" → `detach`). Every fix is
-listed in a `corrections` field (heard, written, refs) and rendered as an appendix.
+aloud in code form and to fix a recognition error only when the context makes the word certain.
+Every fix is listed in a `corrections` field (heard, written, refs) and rendered as an appendix.
+
+The acceptance cases ("TEC" → `detach`, "PyTorch.neuralNetwork" → `torch.nn`, "ipsilon pred" →
+`y_pred`) never appear in a prompt, as examples or otherwise: the prompts use a made-up example
+("scores dot bush" → `scores.push(newScore)`), so the test measures the model and not the
+prompt. Code items whose text contains an S-number fail validation (and are asked again).
 
 ### Retries and pacing
 
@@ -522,17 +526,25 @@ Rules
 1. Use only what the lecturer says in this part. Never add facts, definitions, examples or
    code that are not in the transcript, even if you know them. If something is unclear,
    put it in open_points instead of guessing.
-2. Every item cites in "refs" the lines it comes from, the line where it starts first.
-   Cite only S-numbers that appear in this part.
+2. "ref" and "refs" hold the S-numbers of the lines an item comes from, the line where it
+   starts first. Cite only S-numbers of this part. S-numbers go only in "ref" and "refs",
+   never inside names, explanations or code.
 3. Write in {language_name}. Keep technical terms as the lecturer uses them.
-4. Write code the lecturer reads aloud in code form ("torch dot nn" -> `torch.nn`,
-   "ipsilon pred" -> `y_pred`). Fix a speech-recognition error only when the context makes
-   the intended word certain, and list every fix in "corrections" (heard, written, refs).
-   Corrections from earlier parts: {glossary}.
-5. Definitions: keep the lecturer's wording; remove only spoken fillers.
+4. Code: every code element the lecturer reads aloud or names goes into "code", even a single
+   method, written as in a source file (spoken punctuation as symbols, multi-word names joined
+   the way the taught language does, quotes, parentheses with the arguments given).
+5. Corrections: fix a speech-recognition error only when the context makes the intended word
+   certain, and list every fix in "corrections" (heard, written, refs). Corrections from
+   earlier parts: {glossary}.
+6. Definitions: keep the lecturer's wording; remove only spoken fillers.
+Example of a made-up lecture (format only): "S901 Now we call scores dot bush with the new
+score" -> code `scores.push(newScore)`, correction "bush" -> "push".
 Sections for this part:
 {for each section: key - instructions - about {target} items}
 ```
+
+The full wording is the probe's `BLOCK_SYSTEM_V2` (`scripts/llm_probe.py`) until piece 2 moves
+it into `prompts/map.md`.
 
 The user message holds the block's lines.
 
@@ -668,3 +680,70 @@ Anthropic stay as optional providers. See "Local provider (Ollama)" above.
 - `ollama --version` → 0.40.15.
 - `ollama pull qwen3.5:9b` → success: two layers of 921 MB and 5.6 GB (assumed: the vision
   weights and the language model), sha256 verified.
+
+Checked by hand with curl and a few small requests (2026-11-09):
+
+- **Silent truncation confirmed.** `num_ctx` 2048 and a 4104-token prompt: HTTP 200, the log
+  says `truncating input prompt limit=1026 prompt=4104`, `prompt_eval_count` 1026, and the
+  answer is nonsense. With `"truncate": false` at the top level of the request: HTTP 400
+  `request (4104 tokens) exceeds the available context size (2048 tokens), try increasing
+  it`. Inside `options`, `truncate` is rejected as "invalid option". The 400 also gives an
+  exact token count, which `count_tokens` uses for texts longer than the context.
+- `num_ctx` below 2048 is raised to 2048 (`/api/ps` `context_length`).
+- `prompt_eval_count` includes the cached tokens (2004 with 2000 cached).
+- The last streamed chunk carries `done_reason` and every count and duration.
+- A chat request with no messages and `keep_alive: 0` answers `done_reason: "unload"`; the
+  model leaves `/api/ps` and the VRAM goes back to the baseline (1071 MiB).
+- `/api/show` for qwen3.5:9b: family `qwen35`, Q4_K_M, capabilities completion, vision, tools,
+  thinking; `thinking: {values: [false, true], default: true}` (on/off only, no levels);
+  default parameters temperature 1, top_p 0.95, top_k 20, presence_penalty 1.5 (the
+  thinking-mode values); `full_attention_interval` 4, 4 KV heads of 256: the KV estimate of 32
+  KiB/token is confirmed.
+- First load from disk 43 s; later loads 7 s.
+
+First run of the probe (tiny request only, by Claude, 2026-11-09):
+
+- At `num_ctx` 32768 Ollama allocates 6.58 GB, all of it in GPU memory; `nvidia-smi` goes from
+  1,071 to 8,344 MiB in use (about 3.9 GB left).
+- Tiny request: 89 input tokens, 27 output, generation 27.9 tokens/s (too short to measure the
+  real speed); valid JSON; the same request with the same seed gave the identical answer.
+- No "invalid option" in Ollama's log, so `presence_penalty`, `top_k` and the others are
+  accepted.
+- Quality signal: with thinking off the model listed `S1`, `S2` as "identifiers" instead of
+  `loss.backward()` and the like. Watch for it in the block test.
+
+Block probes by the user (2026-11-09; draft map prompt v1). The figures marked *(reported)*
+come from the user's summary: the console output itself was not kept.
+
+| | 3 h, 0:30-0:45, effort none | it, 0:05-0:20, effort none | it, 0:05-0:20, effort high |
+|---|---|---|---|
+| Result | valid JSON | valid JSON | `Truncated`: past 6144 output tokens while thinking, after 123 s *(reported)* |
+| Time | 22-34 s per block *(reported)* | | |
+| Generation | about 52 tokens/s *(reported)* | | |
+| GPU | 8.3 GB in use, all of the model on the GPU, unloaded at the end *(reported)* | | |
+| Refs outside the block | 0 of 42 (S243-S327, checked) | 0 of 48 (S62-S241, checked) | |
+| Code examples | 8 | **0** | |
+| Corrections | 0 | **0** | |
+
+Checked by Claude in the saved JSON files (2026-11-10):
+
+- Italian block: `detach` appears nowhere (not in concepts, definitions or open points);
+  `code` and `corrections` are empty although the block names `PyTorch.neuralNetwork` →
+  `Linear` (S88), `unsqueeze` with index 1 (S113, S115) and "il metodo di TEC" (S186).
+  `unsqueeze` appears only as a plain word inside a concept. 6 topics, 10 concepts and 8
+  definitions are otherwise faithful to the transcript.
+- English block: the 8 code items are spoken words, not code: `my string is my name is + name`,
+  `first name.length`, `last name[last name.length - 1]`, `word blanks(noun, adjective, verb,
+  adverb)`: names not joined, strings without quotes.
+- So with thinking off and prompt v1, the 9B model summarises well but does not write code in
+  code form and makes no corrections.
+- "thinking None" in the probe with effort high: the provider did not count thinking tokens
+  (Ollama's `eval_count` covers thinking and answer together). Fixed: the thinking chunks are
+  counted (about one token each; 29 content chunks for an `eval_count` of 33 in an earlier
+  check, so the count is approximate).
+
+Changes after these results (2026-11-10): prompt v2 in the probe (explicit code and correction
+rules, a made-up example that avoids the acceptance cases, S-numbers only in refs), an output
+cap of 16384 with thinking on, `--expect WORD` to find a word in the notes, and a check for
+S-numbers inside code and for text copied from the example. Defaults unchanged: ollama /
+`qwen3.5:9b`, effort none.

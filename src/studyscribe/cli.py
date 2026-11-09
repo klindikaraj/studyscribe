@@ -28,9 +28,9 @@ from studyscribe.config import (
 from studyscribe.db import repo
 from studyscribe.db.connection import open_database
 from studyscribe.notes import keys
-from studyscribe.notes.providers import DEFAULT_MODELS, make_provider
+from studyscribe.notes.providers import DEFAULT_MODELS, DEFAULT_PROVIDER, make_provider
 from studyscribe.notes.providers.base import (
-    PROVIDERS,
+    KEY_PROVIDERS,
     InvalidKey,
     LlmError,
     LlmProvider,
@@ -129,21 +129,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     config = commands.add_parser(
         "config",
-        help="API keys for the notes (stored in the Windows Credential Manager)",
-        description="Manage the API keys of the LLM providers. Keys are kept in the Windows "
-        "Credential Manager; environment variables work as a fallback.",
+        help="LLM providers for the notes: local Ollama state, cloud API keys",
+        description="Show the state of the local provider (Ollama) and manage the API keys of "
+        "the cloud providers. Keys are kept in the Windows Credential Manager; environment "
+        "variables work as a fallback.",
     )
     config_actions = config.add_subparsers(dest="config_action", metavar="ACTION", required=True)
     set_key = config_actions.add_parser(
         "set-key", help="store a provider's API key (typed or pasted, not shown)",
         description="Read the key without echoing it, check it with a free request (no tokens), "
         "and store it.")
-    set_key.add_argument("provider", choices=PROVIDERS)
+    set_key.add_argument("provider", choices=KEY_PROVIDERS)
     set_key.add_argument("--no-check", action="store_true",
                          help="store the key without checking it online")
     delete_key = config_actions.add_parser("delete-key", help="remove a stored API key")
-    delete_key.add_argument("provider", choices=PROVIDERS)
-    config_actions.add_parser("show", help="where each provider's key comes from (masked)")
+    delete_key.add_argument("provider", choices=KEY_PROVIDERS)
+    config_actions.add_parser(
+        "show", help="Ollama's state and where each cloud provider's key comes from (masked)")
     return parser
 
 
@@ -342,13 +344,14 @@ def _write_exports(conn: sqlite3.Connection, data_dir: Path, session_id: str, ou
 def cmd_config(args: argparse.Namespace, out: TextIO, *, store: keys.KeyStore | None = None,
                environ: Mapping[str, str] | None = None,
                read_secret: Callable[[str], str] | None = None,
-               make: Callable[[str, str | None, str], LlmProvider] = make_provider) -> int:
-    """API keys. `store`, `environ`, `read_secret` and `make` let tests run without the real
-    credential store, console or network."""
+               make: Callable[[str, str | None, str], LlmProvider] = make_provider,
+               ollama_status: Callable[[], list[str]] | None = None) -> int:
+    """Providers and API keys. `store`, `environ`, `read_secret`, `make` and `ollama_status` let
+    tests run without the real credential store, console, network or Ollama."""
     environ = os.environ if environ is None else environ
     try:
         if args.config_action == "show":
-            return _config_show(out, store, environ)
+            return _config_show(out, store, environ, ollama_status or _ollama_status)
         if args.config_action == "delete-key":
             if keys.delete_key(args.provider, store=store):
                 print(f"Key for {args.provider} removed from the {keys.KEYRING_SOURCE}.", file=out)
@@ -361,14 +364,41 @@ def cmd_config(args: argparse.Namespace, out: TextIO, *, store: keys.KeyStore | 
         return 1
 
 
-def _config_show(out: TextIO, store: keys.KeyStore | None, environ: Mapping[str, str]) -> int:
-    for provider in PROVIDERS:
+def _config_show(out: TextIO, store: keys.KeyStore | None, environ: Mapping[str, str],
+                 ollama_status: Callable[[], list[str]]) -> int:
+    print(f"Default provider: {DEFAULT_PROVIDER} ({DEFAULT_MODELS[DEFAULT_PROVIDER]})", file=out)
+    for line in ollama_status():
+        print(line, file=out)
+    for provider in KEY_PROVIDERS:
         found = keys.find_key(provider, store=store, environ=environ)
         where = f"{keys.mask(found.key)} from {found.source}" if found else "not set"
         print(f"{provider}: {where}  (default model {DEFAULT_MODELS[provider]})", file=out)
     print("Environment variables, used when no key is stored: "
           + ", ".join(name for names in keys.ENV_VARS.values() for name in names), file=out)
     return 0
+
+
+def _ollama_status() -> list[str]:
+    """Ollama's state for `config show`: reachable, version, models, the default model."""
+    from studyscribe.notes.providers.ollama import OllamaOptions, OllamaProvider, is_local
+
+    options = OllamaOptions()
+    model = DEFAULT_MODELS["ollama"]
+    provider = OllamaProvider(model, options)
+    where = options.host + ("" if is_local(options.host) else " (not this PC: text leaves it)")
+    try:
+        version = provider.server_version()
+        models = provider.downloaded_models()
+    except LlmError as exc:
+        return [f"ollama: {exc.message} {exc.remedy}".rstrip()]
+    names = [name for name, _ in models]
+    lines = [f"ollama: version {version} at {where}",
+             "  models: " + (", ".join(f"{n} ({s / 1e9:.1f} GB)" for n, s in models) or "none")]
+    if model in names or f"{model}:latest" in names:
+        lines.append(f"  default model {model}: downloaded")
+    else:
+        lines.append(f"  default model {model}: NOT downloaded (run: ollama pull {model})")
+    return lines
 
 
 def _config_set_key(args: argparse.Namespace, out: TextIO, store: keys.KeyStore | None,
