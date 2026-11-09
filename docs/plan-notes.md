@@ -1,10 +1,12 @@
 # Step 3 plan: study notes
 
-Agreed plan for step 3 of the roadmap (approved 2026-11-03). Update it when a decision changes.
+Agreed plan for step 3 of the roadmap (approved 2026-11-03; local provider added 2026-11-09).
+Update it when a decision changes.
 
 ## Goal
 
-Turn a session's transcript into study notes with a cloud LLM: validated JSON, rendered to
+Turn a session's transcript into study notes with an LLM (local by default, cloud optional):
+validated JSON, rendered to
 `exports/notes.md` and a self-contained `exports/notes.html` with an audio player and clickable
 timestamps. Roadmap: "every timestamp in the notes points to the right audio position; no
 invented references". The acceptance test uses two copies of real sessions:
@@ -18,15 +20,17 @@ The originals are never touched.
 
 ## Decisions
 
-Agreed with the user on 2026-11-03.
+Agreed with the user on 2026-11-03; 1, 5, 6 and 9 changed on 2026-11-09 (local provider).
 
-1. Providers behind one interface, two backends:
-   - Google Gemini, free tier for development and tests. The free tier is rate limited, so
-     requests are paced and retried with backoff.
-   - Anthropic Claude: Haiku 5.5 and Sonnet 5.5.
-   The default model is chosen after an A/B test on the 3 h lecture (gemini-3.8-flash, Haiku 5.5,
-   Sonnet 5.5; gemini-3.5-flash-lite only if Flash turns out poor). Until then the default is
-   gemini / `gemini-3.8-flash`, effort `medium`.
+1. Providers behind one interface, three backends:
+   - **Ollama (default)**: a local model on the RTX 3060, through Ollama's native API. Free, no
+     quota, the transcript never leaves the PC. Details in "Local provider (Ollama)".
+   - Google Gemini (optional). The free tier failed every generation in piece 1 (503/504), so it
+     is no longer the default; requests are still paced and retried with backoff.
+   - Anthropic Claude (optional): Haiku 5.5 and Sonnet 5.5, once the account has credit.
+   Default: ollama / `qwen3.5:9b`, thinking off (confirmed by the user on 2026-11-09).
+   `gemma4:12b-it-qat` is pulled only later, for the comparison in the acceptance test. An
+   OpenAI-compatible backend (OpenRouter, FreeLLMAPI) is possible later; it is not part of step 3.
 2. Notes are written in the transcript's `language`; `--notes-language` overrides it. Section
    headings are localised in the template (en, it).
 3. Default template "Studio" with seven sections: Summary (5-8 sentences), Outline (topics with
@@ -37,20 +41,26 @@ Agreed with the user on 2026-11-03.
    timestamp seeks the player and starts it, and answers to review questions stay hidden until
    opened.
 5. Commands: `studyscribe notes SESSION_ID [--provider] [--model] [--notes-language]
-   [--template]` and `transcribe --notes` for the whole chain. Before sending, the cost is
-   estimated; above a configurable threshold (default $0.50) the CLI asks for confirmation. On
-   the free tier the cost is $0 but the token estimate is still shown. At the end, tokens and
-   cost are printed and stored.
+   [--template]` and `transcribe --notes` for the whole chain. Before sending, the tokens are
+   estimated. Cloud providers: cost estimate, and above a configurable threshold (default $0.50)
+   the CLI asks for confirmation; on the free tier the cost is $0 but the token estimate is still
+   shown. Ollama: cost 0, tokens and estimated time instead, never a confirmation. At the end,
+   tokens, time and cost are printed and stored.
 6. Privacy: only text goes to the provider: the transcript, the session title, the course name
-   (they help with technical terms) and the instructions. Never the audio. When the Gemini free
-   tier is used, the CLI prints: "Gemini free tier: Google may use this transcript to improve its
-   products." (The user accepted the free tier for the test lectures, which are public videos.)
+   (they help with technical terms) and the instructions. Never the audio. With Ollama on
+   localhost nothing leaves the PC; if `OLLAMA_HOST` points to another machine the CLI says so.
+   When the Gemini free tier is used, the CLI prints: "Gemini free tier: Google may use this
+   transcript to improve its products." (The user accepted the free tier for the test lectures,
+   which are public videos.)
 7. Regeneration keeps versions: every generation is kept (each one is paid for); the exports
    show the latest completed one, and `export --notes-version N` writes `notes-vN.md/.html`.
 8. API keys in the Windows Credential Manager through `keyring`, entered with
    `studyscribe config set-key gemini|anthropic` (no echo). Environment variables as fallback.
    Never in repo files, never in logs or error messages.
-9. Effort `medium` by default (thinking level for Gemini, `effort` for Claude).
+9. Effort: `medium` by default for the cloud providers (thinking level for Gemini, `effort` for
+   Claude). Ollama: new value `none` (thinking off) by default; `low|medium|high` turn thinking
+   on where the model supports it (checked from the model's capabilities). The acceptance test
+   also runs `qwen3.5:9b` with thinking on, since it may help on the long summaries (reduce).
 
 ## Findings before the plan (verified 2026-11-03)
 
@@ -109,21 +119,195 @@ with this date and must be checked again before they are trusted.
 | 3h-copy (en) | 1415 | 2:45:58 | 24,673 | 126,356 |
 | it-copy (it) | 241 | 0:17:28 | 2,922 | 18,381 |
 
+## Local provider (Ollama)
+
+Added 2026-11-09. Checked on docs.ollama.com (structured outputs, OpenAI compatibility, FAQ,
+`/api/chat`, `/api/ps`, Windows), on ollama.com/library (tags and sizes) and on the Hugging Face
+model cards. Ollama is not installed yet: everything marked *(probe)* is checked by the probe
+once it is.
+
+### Native API, not the OpenAI-compatible one
+
+`providers/ollama.py` talks to Ollama's native API (`POST /api/chat`), for these reasons:
+
+| | Native `/api/chat` | OpenAI-compatible `/v1/chat/completions` |
+|---|---|---|
+| JSON schema output | `format: <JSON schema>`, documented with a pydantic example | `response_format`: the page confirms only JSON mode, not `json_schema` |
+| Context window | `options.num_ctx` per request | "The OpenAI API does not have a way of setting the context size": only a custom Modelfile |
+| Unloading the model | `keep_alive` per request (`0` = unload right after) | not documented |
+| Usage and timing | `prompt_eval_count`, `prompt_eval_cached_count`, `eval_count`, `load_duration`, `prompt_eval_duration`, `eval_duration`, `done_reason` | usage only, with `stream_options` |
+| Thinking | `think: false/true/"low"…` | `reasoning_effort` |
+
+The context size alone decides it: through the OpenAI-compatible endpoint the app could not set
+it, and Ollama's default is 4096 tokens. An `openai_compatible` backend stays useful for
+OpenRouter or FreeLLMAPI later, but it would not be the right way to talk to Ollama.
+
+No new package: plain HTTP with the standard library (`http.client`), streaming NDJSON. Streaming
+gives a live progress line (tokens so far, tokens/s) and keeps Ctrl+C responsive during long
+generations. The docs list timing and token counts only for the non-streamed response; the
+final streamed chunk is expected to carry them too *(probe)*. If it does not, the provider
+uses `stream: false` with a long read timeout.
+
+The model's output is still validated with pydantic as for the cloud providers: the docs do not
+say whether the schema is enforced by constrained decoding, and they recommend repeating the
+schema in the prompt, which the map and reduce prompts will do.
+
+### Candidate models (checked on ollama.com/library, 2026-11-09)
+
+The VRAM budget: 12,288 MiB, of which the Windows desktop already uses about 1.3 GB (measured
+with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
+
+| | `qwen3.5:9b` (recommended) | `gemma4:12b-it-qat` | `qwen3.5:4b` |
+|---|---|---|---|
+| Download | 6.6 GB (Q4_K_M) | 7.2 GB (QAT 4-bit) | 3.3 GB (Q4_K_M) |
+| Architecture | dense 9B, hybrid: 24 Gated DeltaNet layers + 8 attention layers (4 KV heads, dim 256) | dense 12B, 48 layers, sliding window 1024 interleaved with global layers | same family as 9B *(layout not checked)* |
+| KV cache, f16 | 32 KiB/token (only 8 layers keep a KV cache): 1 GiB at 32k, 2 GiB at 64k | not computable from the card (KV heads and global-layer ratio not published) | smaller than 9B |
+| Estimated VRAM at 32k | ~8.5 GB | ~10-11 GB (tight) | ~5 GB |
+| Instructions | IFEval 91.5, IFBench 64.5 (Qwen card) | IFBench 74 (Gemma card); IFEval not published | lower *(not checked)* |
+| Multilingual | 201 languages; MMMLU 81.2, MMLU-ProX 76.3 | 35+ out of the box, 140+ pre-trained; MMMLU 83.4 | 201 languages |
+| Native context | 262,144 | 256K | 256K |
+| Thinking | on by default, `think: false` turns it off *(probe)* | off unless enabled; with thinking off the 12B still emits an empty thought block | as 9B |
+
+- **Recommended: `qwen3.5:9b`.** Best published instruction-following score of the three, and
+  its hybrid attention keeps the KV cache small, so a 32k context fits with room to spare.
+- `gemma4:12b-it-qat` as the second model for the A/B test: possibly better Italian, but the
+  VRAM margin is thin and its KV size could not be computed. If it does not fit entirely on
+  the GPU at 32k, the test uses 16k.
+- `qwen3.5:4b` as the fallback when VRAM is short (another app using the GPU) and for quick
+  tests; lower quality expected.
+- Not chosen: `granite4.2:8b` (Italian supported and JSON output advertised, but dense with
+  128K context: KV cache unknown, probably several GB at 32k), `ministral-3:14b` (9.1 GB, no
+  room for the context), the 26-35B MoE models (16-22 GB).
+- Unverified: VRAM figures are estimates (weights + KV + about 1 GB of buffers); the vision
+  weights may be loaded as well. The probe measures them with `/api/ps` and `nvidia-smi`.
+
+### Context window
+
+- Every request sets `options.num_ctx` explicitly. Default 32768, setting `ollama.num_ctx`. It
+  stays the same for the whole run: a different `num_ctx` makes Ollama reload the model.
+- Budget per request: `num_ctx − num_predict − 512` tokens of margin. `num_predict` (output
+  cap): 6144 for map, 8192 for reduce.
+- Map blocks (10-15 min) are about 2.5-3.6k tokens of transcript plus about 2k of prompt: far
+  inside the budget.
+- **Hierarchical reduce.** The single reduce on the 3 h lecture would take about 35-38k tokens
+  of map outputs, more than the 32k budget. `plan_reduce` (pure) groups consecutive map outputs
+  so that every group fits the budget and the groups are balanced; each group is reduced into
+  one partial note with the map schema (refs kept, duplicates merged), and the final reduce
+  works on the partials. More levels if needed. Since small models also lose quality on long
+  inputs, the reduce input is capped at `ollama.reduce_max_input` tokens (default 16k) even when
+  the context is larger. Requests:
+  - 3 h lecture: 14 map requests, then 3 partial reduces (groups of 5, 5 and 4 map outputs,
+    about 12k tokens each), then 1 final reduce on the 3 partials: 18 requests in all.
+  - 20 min lecture: 2 map requests and 1 final reduce (no partials): 3 requests.
+  - The cloud providers keep a single reduce (their limit is the 90k guard above).
+- **No silent truncation.** Ollama's behaviour on a prompt longer than `num_ctx` is not
+  documented; several reports say it drops the start of the prompt without an error. Three
+  guards:
+  1. Before sending: estimated input tokens = characters / `chars_per_token_min` for the model
+     (default 2.5, conservative; then the lowest ratio measured on this model's past calls
+     × 0.9). Over the budget → `ContextTooLong`, nothing sent. The pipeline sizes blocks and
+     reduce groups from the same budget, so this only fires on a bug.
+  2. After the response: `prompt_eval_count + prompt_eval_cached_count + eval_count ≥ num_ctx`,
+     or input tokens below characters / 8 (implausibly few) → the response is discarded as
+     possibly truncated, with an error.
+  3. If `/api/chat` accepts a `truncate: false` option (the release notes of 0.40.16-rc0 mention
+     a truncation option for the OpenAI layer) *(probe)*, it is sent too, so Ollama itself
+     refuses instead of truncating.
+
+### GPU memory
+
+- Whisper (~2.3 GB) and the LLM are never in VRAM together. In `transcribe --notes` the
+  transcriber gets a `close()` that drops the CTranslate2 model and runs `gc.collect()` before
+  the notes start *(probe: VRAM back to the baseline in `nvidia-smi`)*. The notes then run in
+  the same process, which no longer holds any GPU memory.
+- Ollama does not fail when a model does not fit: it splits the layers between GPU and CPU and
+  becomes many times slower. After loading (a request with no messages loads the model), the
+  provider reads `/api/ps`: if `size_vram < size`, it stops with: "qwen3.5:9b fits only partly in
+  GPU memory (6.1 of 8.4 GB). Close apps that use the GPU (games, video editors, browsers with
+  hardware acceleration), or use a smaller model (`--model qwen3.5:4b`) or a smaller context
+  (`config set ollama.num_ctx 16384`)." `--allow-cpu` proceeds anyway. `/api/ps` also reports the
+  `context_length` actually used, which must equal `num_ctx`.
+- Before loading, free VRAM from `nvidia-smi` (installed with the driver; skipped if missing) is
+  compared with the model's size from `/api/ps` of the last run or its download size + KV
+  estimate: if clearly too small, the same message before waiting for the load.
+- `keep_alive`: Ollama keeps a model loaded 5 minutes after the last request by default. During
+  a run every request sends `keep_alive: "10m"` (no reload between blocks); at the end, on error
+  and on Ctrl+C, a `finally` sends `keep_alive: 0` with no messages, which unloads it at once,
+  so the VRAM is free again for Whisper or other apps *(probe: `/api/ps` empty afterwards)*.
+- Ollama runs out of process, so a crash of StudyScribe leaves the model loaded for at most the
+  10 minutes of `keep_alive`.
+
+### Sampling and determinism
+
+- Thinking off (`think: false`), fixed `seed` (stored in `options_json`), sampling from a
+  small per-model table with the values recommended by the model card for non-thinking use.
+  Qwen3.5: temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5. Gemma 4: temperature 1.0,
+  top_p 0.95, top_k 64.
+- Not temperature 0: Qwen's cards warn that greedy decoding causes endless repetitions (stated
+  for Qwen3; assumed for 3.5). With a fixed seed and the same input, Ollama is expected to give
+  the same output on the same machine *(probe: two identical requests)*. If the probe shows
+  repetition loops anyway, the table changes, not the code.
+- Whether Ollama honours `presence_penalty` with these models is not documented *(probe)*.
+
+### Estimates and speed (to be measured)
+
+- Cost 0; the CLI shows requests, estimated input/output tokens and estimated time.
+- Time = prefill tokens / prefill speed + output tokens / generation speed. Speeds come from
+  the model's past calls in `llm_calls` (median); before any run, a default per model.
+- Expectation for `qwen3.5:9b` on the 3060 (360 GB/s of memory bandwidth, ~6 GB read per
+  token): about 35-50 tokens/s generated, 1,000-3,000 tokens/s of prefill. 3 h lecture: about
+  70k tokens of prefill (under a minute) and 40-50k generated (map ~2.5k per block, partial
+  and final reduces ~3-8k each): **about 15-25 minutes**. 20 min lecture: about 3 minutes.
+  These are guesses until the probe measures them.
+
+### Errors (each with a remedy, no traceback)
+
+| Situation | Detected by | Message / remedy |
+|---|---|---|
+| Ollama not running | connection refused on `OLLAMA_HOST` (default `127.0.0.1:11434`) | "Ollama is not running. Start it from the Start menu, or run `ollama serve`." |
+| Ollama not installed | same, and no `ollama.exe` on PATH or in `%LOCALAPPDATA%\Programs\Ollama` | "Ollama is not installed: https://ollama.com/download/windows" |
+| Model not downloaded | `POST /api/show` → 404 | "Model qwen3.5:9b is not downloaded. Run: `ollama pull qwen3.5:9b` (6.6 GB)." |
+| Ollama too old for the model | load error mentioning the architecture | "Update Ollama (installed: 0.x; the model needs a newer one)." |
+| Partly on CPU | `/api/ps`: `size_vram < size` | see "GPU memory" |
+| Out of GPU memory | 500 from the load with a CUDA/memory error | same remedies as above |
+| Input too long | guard 1 or 2 | bug report text: the request is not sent, or its response is discarded |
+| Output cut off | `done_reason: "length"` | `Truncated`: one retry with a larger `num_predict` if the context allows, else stop |
+| Invalid JSON / schema | pydantic | the pipeline's retry with the validation error (2 at most) |
+| Stalled stream | no chunk for 120 s | `NetworkError` (retried) |
+
+### Probe (`scripts/llm_probe.py --provider ollama`)
+
+Version, model check (`/api/show`: capabilities, quantisation, context length), the three-field
+JSON request, then on `--session`: the whole map prompt of one 15-minute block of the 3 h
+lecture. Prints: valid JSON or not, input/output tokens, chars/token, load time, prefill and
+generation tokens/s, total time, `size`/`size_vram`/`context_length` from `/api/ps`, VRAM from
+`nvidia-smi` before, during and after, whether the final `keep_alive: 0` unloaded the model,
+whether the streamed final chunk has the counts, whether `truncate: false` is accepted, and
+whether two identical seeded requests give the same text.
+
 ## Pieces (one at a time, stop after each with a test summary)
 
 1. Provider layer: interface, Gemini and Claude backends, retry and pacing, keys,
    `config set-key/show/delete-key`, `scripts/llm_probe.py`. Probe: one tiny request with a
    three-field schema per provider (model, latency, tokens, cost) and an exact token count of
    the two transcripts. Unit tests: backoff with a fake clock, error mapping, key lookup order,
-   key redaction. Anthropic only once the user has a key, and only after asking.
-2. Pipeline: blocks, map, reduce, schema from the template, validation, reference checks,
-   identifier corrections, resume. All tests offline with a fake LLM.
+   key redaction. Anthropic only once the user has a key, and only after asking. **Done.**
+1b. Ollama provider (`providers/ollama.py`, `gpu.py`), `config show` with Ollama's state, the
+   probe above. Unit tests with a fake HTTP server (local socket, no Ollama): error mapping,
+   context guards, `/api/ps` offload check, unload in `finally`. Only after the user has
+   installed Ollama and pulled the model.
+2. Pipeline: blocks, map, reduce (hierarchical when it does not fit), schema from the template,
+   validation, reference checks, identifier corrections, resume. All tests offline with a fake
+   LLM.
 3. Database v3 and CLI: `notes`, `transcribe --notes`, estimate and confirmation, recovery,
    `template list/import`, NOTES column in `sessions`.
 4. Export: `notes.md`, `notes.html` with player and clickable timestamps, `audio.flac` when
    missing.
-5. Acceptance: notes on the 3 h lecture with gemini-3.8-flash, Haiku 5.5 and Sonnet 5.5 (quality
-   and real cost from `llm_calls`), notes on the Italian lecture, and a checklist in
+5. Acceptance: notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
+   off and on) and `gemma4:12b-it-qat` (quality, time, VRAM from `llm_calls` and the probe);
+   cloud models only
+   if the user wants them later (Gemini when it answers, Claude once the account has credit,
+   after asking). A checklist in
    `docs/manual-test-notes.md`: timestamps to click, definitions to compare with the audio, the
    "TEC" → `detach` correction (0:14:01 to 0:14:08).
 
@@ -138,6 +322,10 @@ Installed only after the user confirms. All four in the main dependencies, no ex
 | keyring | `>=25.7,<26` | 25.7.0 | API keys in the Windows Credential Manager |
 | pydantic | `>=2.14,<3` | 2.14.2 | output schemas and validation (both SDKs depend on it anyway) |
 
+Ollama needs no Python package (standard-library HTTP). Ollama itself is a separate program the
+user installs (`OllamaSetup.exe` from ollama.com, no administrator rights, NVIDIA driver 551.61 or
+newer: 617.42 installed); models go to `%USERPROFILE%\.ollama\models`.
+
 ## Modules
 
 ```
@@ -147,7 +335,10 @@ src/studyscribe/notes/
   providers/gemini.py   GeminiProvider (only module importing google.genai)
   providers/claude.py   ClaudeProvider (only module importing anthropic; streaming +
                         get_final_message)
+  providers/ollama.py   OllamaProvider: native /api/chat (stdlib HTTP, NDJSON stream), model
+                        check, context guards, /api/ps offload check, load/unload, sampling table
   providers/retry.py    backoff and pacing (pure, injectable clock)
+  gpu.py                free VRAM from nvidia-smi (optional; None when unavailable)
   pricing.py            price table with its verification date, cost from usage (Haiku's
                         100k threshold)
   keys.py               keyring + environment variables (only module importing keyring)
@@ -157,6 +348,7 @@ src/studyscribe/notes/
   prompts.py            PROMPT_VERSION, prompt rendering, hash of the prompt files
   prompts/map.md, prompts/reduce.md
   blocks.py             block cuts in pauses (pure)
+  reduce_plan.py        grouping of map outputs for the hierarchical reduce (pure)
   refs.py               reference validation and resolution (pure)
   estimate.py           token and cost estimate (pure)
   pipeline.py           map / reduce, validation, retries (no database)
@@ -167,23 +359,26 @@ docs/manual-test-notes.md
 ```
 
 Changed: `pyproject.toml`, `db/migrations.py` (V3), `db/repo.py`, `session.py` (lock byte 3),
-`recovery.py`, `cli.py`, `tests/fakes.py` (FakeLlm), `README.md` and `CLAUDE.md` at the end.
+`recovery.py`, `cli.py`, `tests/fakes.py` (FakeLlm), `transcribe/whisper.py` (`close()`),
+`README.md` and `CLAUDE.md` at the end.
 
 ## Flow
 
 1. Checks: the session exists and has a done transcript; at least 5 minutes of speech (sum of
    `end_ms - start_ms` of kept segments); the transcript has a language or `--notes-language` is
-   given; a key exists for the provider.
+   given; a key exists for the provider (cloud), or Ollama runs and has the model (local).
 2. Blocks: 10 to 15 minutes each, cut at the longest gap between two segments in that range; a
    last block under 5 minutes joins the previous one. About 14 blocks for 3 h, 2 for 20 min.
-3. Estimate: requests, input and output tokens, cost (charged and list price), requests against
-   the per-minute and per-day limits. Confirmation above the threshold; with no terminal and no
-   `--yes`, nothing is sent.
+3. Estimate: requests, input and output tokens; cloud: cost (charged and list price) and
+   requests against the per-minute and per-day limits, confirmation above the threshold (with no
+   terminal and no `--yes`, nothing is sent); Ollama: estimated time, no confirmation, then the
+   model is loaded and the GPU check runs before the first block.
 4. Map, sequential: one request per block with the title, course, language and the glossary of
    corrections from earlier blocks (so identifiers stay consistent). References must fall inside
    the block.
-5. Reduce: one request on the validated map outputs only (not on the transcript). It merges
-   duplicates, joins their references and sizes each section to the lecture's length.
+5. Reduce: on the validated map outputs only (not on the transcript). It merges duplicates,
+   joins their references and sizes each section to the lecture's length. One request when the
+   map outputs fit the budget, otherwise partial reduces first (see "Context window").
 6. Resolution: `S<n>` → segment id → `start_ms`; content, Markdown and stats stored; exports
    written.
 
@@ -239,7 +434,8 @@ generations of dead processes as `interrupted`, as it does for transcription run
 
 ```sql
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  -- default provider/model, confirmation threshold, gemini tier, rpm/rpd
+  -- default provider/model, confirmation threshold, gemini tier, rpm/rpd,
+  -- ollama.num_ctx, ollama.reduce_max_input, ollama.keep_alive
 
 CREATE TABLE templates (
   id TEXT PRIMARY KEY, title_json TEXT NOT NULL, description TEXT,
@@ -271,14 +467,16 @@ CREATE UNIQUE INDEX idx_notes_open ON generated_notes(session_id)
 CREATE TABLE llm_calls (
   id INTEGER PRIMARY KEY,
   notes_id INTEGER NOT NULL REFERENCES generated_notes(id) ON DELETE CASCADE,
-  stage TEXT NOT NULL CHECK (stage IN ('map','reduce')),
-  block INTEGER NOT NULL, attempt INTEGER NOT NULL,
+  stage TEXT NOT NULL CHECK (stage IN ('map','partial','reduce')),  -- partial: hierarchical reduce
+  block INTEGER NOT NULL, attempt INTEGER NOT NULL,                  -- block = group for 'partial'
   status TEXT NOT NULL CHECK (status IN ('ok','invalid','error')),
   model_version TEXT, request_id TEXT,
   input_tokens INTEGER, output_tokens INTEGER, thinking_tokens INTEGER, cached_tokens INTEGER,
   cost_usd REAL,        -- charged (0 on the free tier)
   list_cost_usd REAL,   -- at list price
-  duration_s REAL, output_json TEXT, error TEXT, created_at TEXT NOT NULL
+  duration_s REAL,
+  load_s REAL, prefill_s REAL, generate_s REAL,  -- Ollama timings (speed estimates); NULL for cloud
+  output_json TEXT, error TEXT, created_at TEXT NOT NULL
 );
 ```
 
@@ -291,14 +489,17 @@ notes stay readable and are flagged as based on an earlier transcript. The templ
 ```
 studyscribe config set-key gemini|anthropic   (getpass, no echo) | delete-key | show | set NAME VALUE
 studyscribe notes SESSION_ID [--provider] [--model] [--notes-language] [--template studio]
-                  [--effort low|medium|high] [--yes] [--restart] [--list]
+                  [--effort none|low|medium|high] [--yes] [--restart] [--list] [--allow-cpu]
 studyscribe transcribe SESSION_ID --notes [same options]
 studyscribe export SESSION_ID [--audio] [--notes-version N]
 studyscribe template list | import FILE.json
 ```
 
 - Before sending: blocks, requests, estimated tokens (in/out), estimated cost (on the free tier
-  "$0, $0.44 at list price"), requests against the limits; the free-tier privacy notice.
+  "$0, $0.44 at list price"), requests against the limits; the free-tier privacy notice. Ollama:
+  blocks, requests, tokens, estimated time, model and context, "local: nothing leaves this PC".
+- `config show` also prints Ollama's state: reachable or not, version, models downloaded, the
+  default model and whether it is present.
 - At the end: tokens, cost, dropped references. `sessions` gets a NOTES column.
 - Expected errors, each with a message and a remedy and no traceback: missing or invalid key,
   per-minute quota, daily quota, spend limit reached (`enforced_spend_limit_reached`, "usage
@@ -380,6 +581,10 @@ Assumptions: about 3.2 characters per token with the Claude tokenizer, about 4 w
 | 3 h | 14 map + 1 reduce | ~130k (map ~5.5k each, reduce ~38k) | ~90k | ~$0.06 | ~$1.15 (0.8-1.5) | ~$0.44 ($0.88) | $0 |
 | it 20 min | 2 + 1 | ~19k | ~14k | ~$0.01 | ~$0.18 | ~$0.07 | $0 |
 
+Measured in piece 1: the Gemini tokenizer gives 3.38 (en) and 3.51 (it) characters per token,
+about 15% more tokens than assumed. Ollama (`qwen3.5:9b`, thinking off, hierarchical reduce):
+3 h about 18 requests, ~70k tokens in, ~40-50k out, $0, about 15-25 minutes (unmeasured).
+
 - Every request stays under 40k tokens, far from Haiku's 100k threshold. The code still refuses a
   request estimated above 90k (only lectures over about 9 hours would get there).
 - Sonnet on the 3 h lecture is above the $0.50 threshold and asks for confirmation.
@@ -394,6 +599,8 @@ Assumptions: about 3.2 characters per token with the Claude tokenizer, about 4 w
 - Pipeline and runner with `FakeLlm` (scripted responses, invalid JSON, invented references,
   429s, daily quota, interruption after N calls): no network in `pytest`.
 - Provider modules: error mapping tested with the SDKs' exception classes, no request sent.
+  Ollama: a small fake HTTP server on a local socket (scripted NDJSON, 404, 500, refused
+  connection, `/api/ps` with partial offload), no Ollama needed.
 - Real requests only in `scripts/llm_probe.py` and in the acceptance test.
 
 ## Risks and unverified assumptions
@@ -414,6 +621,17 @@ Assumptions: about 3.2 characters per token with the Claude tokenizer, about 4 w
   doubles in January 2027).
 - Haiku 5.5 refusals: no server-side fallback; treated as an error with a message.
 - `anthropic` 2.x is recent (2.0.0 on 2026-10-21, 2.4.0 on 2026-11-02).
+- Local model quality: a 9B model at 4 bits writes weaker notes than the cloud models, and may
+  follow "use only the transcript" less strictly. The validation catches invented references,
+  not invented content; the acceptance test checks it by reading.
+- Ollama on a prompt longer than `num_ctx`: undocumented, reported as silent truncation.
+  Covered by the guards in "Context window".
+- Ollama's schema enforcement is not documented as constrained decoding; small models can also
+  loop until `num_predict`. Both end in validation errors or `Truncated`, never in silent bad
+  notes.
+- VRAM figures and speeds of the candidate models are estimates until the probe.
+- Ollama moves fast (0.40.12 to 0.40.15 in a week): the probe prints the version, and a version
+  that breaks the API shows up as a clear error, not as wrong notes.
 
 ## Findings so far
 
@@ -425,8 +643,7 @@ Installed: anthropic 2.4.0, google-genai 2.34.0, keyring 25.7.0, pydantic 2.14.2
   real key: stored, "checked: Gemini 3.8 Flash is available". `config show` prints the key
   masked, from the Windows Credential Manager.
 - Exact token counts of the transcripts in the pipeline's line format (`llm_probe.py
-  --count-only`; assumed to have been run with the Gemini counter, since the Anthropic account has
-  no credit):
+  --count-only`, with the `gemini-3.8-flash` counter):
 
   | Session | Segments | Characters | Input tokens | Chars/token |
   |---|---|---|---|---|
@@ -444,4 +661,10 @@ Installed: anthropic 2.4.0, google-genai 2.34.0, keyring 25.7.0, pydantic 2.14.2
 
 Decision (2026-11-09): the main provider becomes a local LLM served by Ollama on the RTX 3060.
 Free, no quota, and the transcript never leaves the PC (fine for paid courses too). Gemini and
-Anthropic stay as optional providers. See "Local provider (Ollama)" below.
+Anthropic stay as optional providers. See "Local provider (Ollama)" above.
+
+### Piece 1b: Ollama installed (by the user, 2026-11-09)
+
+- `ollama --version` → 0.40.15.
+- `ollama pull qwen3.5:9b` → success: two layers of 921 MB and 5.6 GB (assumed: the vision
+  weights and the language model), sha256 verified.
