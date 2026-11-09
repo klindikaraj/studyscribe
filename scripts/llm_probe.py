@@ -36,6 +36,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -65,6 +66,14 @@ PROBE_TEXT = (
 BLOCK_OUTPUT_TOKENS = 6144
 OLLAMA_LOG = Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama" / "server.log"
 S_NUMBER = re.compile(r"\bS\d+\b")
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+STRING_LITERAL = re.compile(r"\"[^\"]*\"|'[^']*'|`[^`]*`")
+PROSE = re.compile(r"[A-Za-z']+(?:\s+[A-Za-z']+){4,}")  # five plain words in a row
+CODE_KEYWORDS = {
+    "var", "let", "const", "function", "return", "if", "else", "for", "while", "new", "import",
+    "from", "as", "def", "class", "self", "this", "true", "false", "null", "undefined", "none",
+    "in", "of", "and", "or", "not", "print", "console", "log", "len", "range",
+}
 LOG_MARKERS = ("invalid option", "truncating input", "out of memory")
 
 
@@ -185,7 +194,71 @@ running total", "refs": [902]}}],
 Answer with JSON that follows this schema:
 {schema}"""
 
-PROMPTS = {"v1": BLOCK_SYSTEM, "v2": BLOCK_SYSTEM_V2}
+# v3 (2026-11-10): v2 plus targets per section, so code items do not crowd out concepts and
+# definitions, and a rule against invented names in code (v2 wrote `y_prediatti` for "y
+# previsti", `misure_notte` for "the two tensors", pseudo-code for a formula said in words).
+BLOCK_SYSTEM_V3 = """You turn one part of a recorded lecture into study notes. The input is an
+automatic transcript: lines "S<n> text" (speech recognition, it can contain errors), with
+[H:MM:SS] markers. Lecture: "{title}". Part from {start} to {end}.
+
+Rules
+1. Use only what the lecturer says in this part. Never add facts, definitions, examples or code
+   that are not in the transcript, even if you know them. If something is unclear, put it in
+   open_points instead of guessing.
+2. "ref" and "refs" hold the S-numbers of the lines an item comes from, the line where it
+   starts first. Cite only S-numbers of this part ({first} to {last}). S-numbers go only in
+   "ref" and "refs", never inside names, explanations or code.
+3. Write in {language}. Keep technical terms as the lecturer uses them.
+4. Every section is filled on its own: code items never replace concepts or definitions. For
+   this part aim for about {topics} topics, {concepts} concepts and {definitions} definitions;
+   fewer only when the lecturer really says less. Concepts explain ideas in a few sentences;
+   definitions are the terms the lecturer defines.
+5. Code. Lecturers read code aloud and name code elements: modules, classes, functions,
+   methods, variables, operators, expressions, statements. Every one of them goes into "code",
+   even a single method name, written as it would appear in a source file:
+   - spoken punctuation becomes symbols: "dot" or "punto" -> ".", "equals" or "uguale" -> "=",
+     "plus equals" -> "+=";
+   - a name spoken as several words is joined the way the programming language being taught
+     does it (camelCase in JavaScript, snake_case in Python), unless the lecturer spells it;
+   - text values get quotes, calls get parentheses with the arguments the lecturer gives;
+   - use only names that are in the transcript, or their evident code form (words joined, or
+     a misheard word fixed and listed in "corrections"). Never invent a variable name, an
+     alias, an argument or a value. Code shown on screen but not said is not in the
+     transcript: do not rebuild it. If a name is not clear, leave the item out or add an
+     open point;
+   - a sentence that describes an idea or a formula in words is not code: it belongs in
+     concepts;
+   - "explanation" says in one sentence what the code does in the lecture.
+6. Corrections. Speech recognition often turns a technical word into a similar-sounding wrong
+   word, a short nonsense word or a wrong expansion. When the context makes the intended word
+   certain (for example a method being called on an object), write the right word in the notes
+   and add an entry to "corrections": what was heard, what you wrote, the refs. When you are
+   not certain, keep the transcript's word and add an open point.
+7. Definitions: keep the lecturer's wording; remove only spoken fillers.
+
+Example of a made-up lecture, only to show the format. Never copy its content.
+Transcript:
+S901 Now we call scores dot bush with the new score, to add it to the array.
+S902 And then total score plus equals new score.
+Fragments of the answer:
+"code": [{{"code": "scores.push(newScore)", "explanation": "adds the new score to the array",
+"refs": [901]}}, {{"code": "totalScore += newScore", "explanation": "adds the new score to the
+running total", "refs": [902]}}],
+"corrections": [{{"heard": "bush", "written": "push", "refs": [901]}}]
+
+Answer with JSON that follows this schema:
+{schema}"""
+
+# v4 (2026-11-10): v3 without the made-up example. With v3 the 9B model copied the example's
+# correction ("bush" -> "push", cited on an unrelated line) and invented another one.
+_EXAMPLE_START = "Example of a made-up lecture"
+BLOCK_SYSTEM_V4 = (BLOCK_SYSTEM_V3[:BLOCK_SYSTEM_V3.index(_EXAMPLE_START)]
+                   + BLOCK_SYSTEM_V3[BLOCK_SYSTEM_V3.index("Answer with JSON"):])
+
+PROMPTS = {"v1": BLOCK_SYSTEM, "v2": BLOCK_SYSTEM_V2, "v3": BLOCK_SYSTEM_V3,
+           "v4": BLOCK_SYSTEM_V4}
+# Items per hour of speech for the v3 targets (the Studio template's rates, scaled to a block).
+TARGETS_PER_HOUR = {"topics": 16, "concepts": 24, "definitions": 16}
 EXAMPLE_TEXTS = ("scores.push", "totalScore", "newScore", "bush")  # copied from the example?
 THINKING_OUTPUT_TOKENS = 16384
 LANGUAGE_NAMES = {"en": "English", "it": "Italian"}
@@ -340,7 +413,9 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
     system = PROMPTS[args.prompt].format(
         title=title, start=clock(start_ms), end=clock(end_ms), first=f"S{first}", last=f"S{last}",
         language=LANGUAGE_NAMES.get(language or "", language or "the transcript's language"),
-        schema=json.dumps(BlockNotes.model_json_schema(), separators=(",", ":")))
+        schema=json.dumps(BlockNotes.model_json_schema(), separators=(",", ":")),
+        **{key: max(1, round(rate * args.block_minutes / 60))
+           for key, rate in TARGETS_PER_HOUR.items()})
     print(f"\nBlock {clock(start_ms)}-{clock(end_ms)} of {session_id}: segments S{first}-S{last}, "
           f"{len(system) + len(user):,} characters of prompt (prompt {args.prompt}), "
           f"output cap {cap:,} tokens")
@@ -380,12 +455,30 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
         at = clock(rows[topic.ref - 1]["start_ms"]) if 1 <= topic.ref <= len(rows) else "?"
         print(f"  [{at}] S{topic.ref} {topic.title}")
     for fix in notes.corrections:
-        print(f"  correction: {fix.heard!r} -> {fix.written!r} {fix.refs}")
+        cited = " ".join(rows[n - 1]["text"] for r in fix.refs for n in (r - 1, r, r + 1)
+                         if 1 <= n <= len(rows)).lower()
+        heard = fix.heard.lower().strip()
+        verdict = ("" if heard and heard in cited
+                   else "  <- INVALID: the heard text is not in the cited lines (+-1)")
+        if not verdict and fix.written.lower().strip() in cited:
+            verdict = "  <- INVALID: the written form is already in the transcript"
+        print(f"  correction: {fix.heard!r} -> {fix.written!r} {fix.refs}{verdict}")
+    fixed = {w.lower() for fix in notes.corrections for w in IDENTIFIER.findall(fix.written)}
+    flagged = 0
     for example in notes.code:
-        print(f"  code: {example.code!r} {example.refs}")
+        cited = [rows[n - 1]["text"] for r in example.refs for n in (r - 1, r, r + 1)
+                 if 1 <= n <= len(rows)]
+        missing = unsupported_names(example.code, cited, fixed)
+        prose = PROSE.search(STRING_LITERAL.sub("", example.code))
+        flagged += bool(missing or prose)
+        print(f"  code: {example.code!r} {example.refs}"
+              + (f"  <- not in the cited lines: {', '.join(missing)}" if missing else "")
+              + ("  <- prose, not code" if prose else ""))
+    print(f"  code items flagged (names not in the cited lines +-1, or prose): {flagged} of "
+          f"{len(notes.code)}")
     with_s = [c.code for c in notes.code if S_NUMBER.search(c.code)]
     print(f"  code with an S-number inside: {len(with_s)}" + (f" {with_s[:5]}" if with_s else ""))
-    if args.prompt == "v2":
+    if args.prompt != "v1":
         copied = [t for t in EXAMPLE_TEXTS if t in response.text]
         print(f"  copied from the prompt's example: {copied if copied else 'nothing'}")
     data = notes.model_dump()
@@ -492,6 +585,28 @@ def _print_log_warnings(start: int | None) -> None:
           + ("no ignored options or truncations" if not hits else f"{len(hits)} warnings:"))
     for line in hits[:20]:
         print(f"  {line[:200]}")
+
+
+def unsupported_names(code: str, cited: list[str], fixed: set[str]) -> list[str]:
+    """Names in a code item that no word of the cited transcript lines resembles: each name is
+    split into its words (snake_case, camelCase); a word of 3+ letters is supported when a
+    transcript word contains it or is at least 80% similar to it, or when it is the written
+    form of a listed correction. Keywords and string literals are not checked."""
+    words = {w.lower() for line in cited for w in re.findall(r"\w+", line)}
+    missing = []
+    for name in IDENTIFIER.findall(STRING_LITERAL.sub("", code)):
+        if name.lower() in CODE_KEYWORDS or name.lower() in fixed:
+            continue
+        parts = [p.lower() for p in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+",
+                                                name.replace("_", " "))]
+        for part in parts:
+            if len(part) < 3 or part.isdigit() or part in fixed:
+                continue
+            if not any(part in w or SequenceMatcher(None, part, w).ratio() >= 0.8
+                       for w in words):
+                missing.append(name)
+                break
+    return list(dict.fromkeys(missing))
 
 
 def _output_cap(provider, effort: str, cap: int) -> int:

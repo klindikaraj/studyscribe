@@ -742,7 +742,45 @@ Checked by Claude in the saved JSON files (2026-11-10):
   counted (about one token each; 29 content chunks for an `eval_count` of 33 in an earlier
   check, so the count is approximate).
 
-Changes after these results (2026-11-10): prompt v2 in the probe (explicit code and correction
+Prompt iterations on the same two blocks (2026-11-10; v2 run by the user, v3 and v4 by Claude;
+qwen3.5:9b, all on the GPU, 44-52 tokens/s, 0 refs outside the block in every run). Prompts in
+`scripts/llm_probe.py`: v1 draft; v2 code and correction rules plus a made-up example; v3 = v2
+plus targets per section (about 4 topics, 6 concepts, 4 definitions per 15 minutes) and "never
+invent a name, code said in words is not code"; v4 = v3 without the example.
+
+| Italian block 0:05-0:20 | v1 none | v2 none | v2 high | v3 none | v4 none |
+|---|---|---|---|---|---|
+| Time | | 36 s | 201 s (7,183 thinking tokens) | 31 s | 37 s |
+| Concepts / definitions | 10 / 8 | 5 / 7 | 7 / 2 | 4 / 4 | 6 / 2 |
+| Code items | 0 | 12 | 4 | 7 | 8 |
+| Code items with names not in the cited lines | | 11 of 12 (`y_prediatti` for "y previsti", `inputi`, `output_preveduti`, `misure_notte`, `plt`) | 1 (`plt`) | 6 of 7 (`nn.MSELoss()`, `torch.optim.Adam(…, lr=0.01)` rebuilt from a description) | 0 of 8, but "loss function", `Adam`, `relu` listed as code |
+| Corrections | 0 | 0 | "di TEC" → `.detach()` ✓ | 2, both invented: "bush" → "push" copied from the example, "pesciamo" → "peschiamo" (the transcript already says "peschiamo") | "TEC" → "tensor" ✗, "pescchiamo" → "peschiamo" (invented) |
+
+| English block 0:30-0:45 | v1 none | v2 none | v3 none | v4 none |
+|---|---|---|---|---|
+| Time | | 26 s | 23 s | 28 s |
+| Concepts / definitions | 6 / 0 | 0 / 5 | 4 / 3 | 4 / 3 |
+| Code items | 8, spoken words (`first name.length`) | 18, code form (`firstName[firstName.length - 1]`), 1 prose | 7, all code form | 8, all code form |
+| Corrections | 0 | 0 | 0 | 0 |
+
+Reading:
+- The code rules work in English (v2-v4). In Italian the 9B model with thinking off either
+  invents names (v2), rebuilds code from descriptions (v3), or lists terms as code (v4).
+- The made-up example is harmful on this model: it was copied into the notes (v3).
+- Corrections with thinking off are unreliable: none, invented, or wrong ("TEC" → "tensor").
+  Only thinking on found "TEC" → `detach`, at 5.5 times the time (3 h lecture: about 35-45
+  minutes instead of 7-8 for the map).
+- Two deterministic checks catch most of the bad output and go into the pipeline (piece 2):
+  a correction is dropped when its heard text is not in the cited lines (±1), or when the
+  written form is already there (both invented v3/v4 corrections fail this); code items whose
+  names do not appear in the cited lines (±1), allowing for words joined in camelCase or
+  snake_case and for listed corrections, are counted and flagged (11 of 12 in v2). Wrong but
+  plausible corrections ("tensor") cannot be detected: the corrections appendix with its
+  links lets the reader check them.
+- The `identifiers: ["S1", "S2"]` answer of the tiny request did not change with a clearer
+  field description; with thinking on, the same request ignored "at most eight words".
+
+Changes after the first block results (2026-11-10): prompt v2 in the probe (explicit code and correction
 rules, a made-up example that avoids the acceptance cases, S-numbers only in refs), an output
 cap of 16384 with thinking on, `--expect WORD` to find a word in the notes, and a check for
 S-numbers inside code and for text copied from the example. Defaults unchanged: ollama /
