@@ -417,4 +417,31 @@ Assumptions: about 3.2 characters per token with the Claude tokenizer, about 4 w
 
 ## Findings so far
 
-(Filled in as the pieces are done.)
+### Piece 1: provider layer (tested by the user, 2026-11-04 to 2026-11-09)
+
+Installed: anthropic 2.4.0, google-genai 2.34.0, keyring 25.7.0, pydantic 2.14.2.
+
+- `config set-key gemini` with a made-up key: "Not stored: Gemini rejected the API key." With the
+  real key: stored, "checked: Gemini 3.8 Flash is available". `config show` prints the key
+  masked, from the Windows Credential Manager.
+- Exact token counts of the transcripts in the pipeline's line format (`llm_probe.py
+  --count-only`; assumed to have been run with the Gemini counter, since the Anthropic account has
+  no credit):
+
+  | Session | Segments | Characters | Input tokens | Chars/token |
+  |---|---|---|---|---|
+  | 3h-copy (en) | 1415 | 135,479 | 40,141 | 3.38 |
+  | it-copy (it) | 241 | 19,668 | 5,601 | 3.51 |
+
+  The estimate above assumed about 4 characters per token for Gemini: the real figure is about
+  15% more tokens than that.
+- Generation probe with `gemini-3.8-flash` on the free tier: it has failed for days, every time
+  after 5 retries, with a clean exit and a readable message: 2026-11-04 `503 UNAVAILABLE` ("high
+  demand"), 2026-11-06 `504 DEADLINE_EXCEEDED`. `generate_content` reaches the model (the errors
+  are server-side, not "unknown method"), but no successful structured response has been seen
+  yet. **The free tier is not reliable enough to be the default.**
+- Anthropic: key stored, but the account has no credit, so no request was sent.
+
+Decision (2026-11-09): the main provider becomes a local LLM served by Ollama on the RTX 3060.
+Free, no quota, and the transcript never leaves the PC (fine for paid courses too). Gemini and
+Anthropic stay as optional providers. See "Local provider (Ollama)" below.

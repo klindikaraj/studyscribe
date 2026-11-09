@@ -1,4 +1,4 @@
-"""Command-line entry point: record, transcribe, export, sessions, recover."""
+"""Command-line entry point: record, transcribe, export, sessions, recover, config."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +27,15 @@ from studyscribe.config import (
 )
 from studyscribe.db import repo
 from studyscribe.db.connection import open_database
+from studyscribe.notes import keys
+from studyscribe.notes.providers import DEFAULT_MODELS, make_provider
+from studyscribe.notes.providers.base import (
+    PROVIDERS,
+    InvalidKey,
+    LlmError,
+    LlmProvider,
+    MissingKey,
+)
 from studyscribe.recording import Event, RecorderHandle
 from studyscribe.recovery import (
     Recovered,
@@ -118,6 +127,23 @@ def build_parser() -> argparse.ArgumentParser:
         description="Repair sessions left in 'recording' by a process that no longer runs, "
         "and register segments missing from the manifest.",
     )
+    config = commands.add_parser(
+        "config",
+        help="API keys for the notes (stored in the Windows Credential Manager)",
+        description="Manage the API keys of the LLM providers. Keys are kept in the Windows "
+        "Credential Manager; environment variables work as a fallback.",
+    )
+    config_actions = config.add_subparsers(dest="config_action", metavar="ACTION", required=True)
+    set_key = config_actions.add_parser(
+        "set-key", help="store a provider's API key (typed or pasted, not shown)",
+        description="Read the key without echoing it, check it with a free request (no tokens), "
+        "and store it.")
+    set_key.add_argument("provider", choices=PROVIDERS)
+    set_key.add_argument("--no-check", action="store_true",
+                         help="store the key without checking it online")
+    delete_key = config_actions.add_parser("delete-key", help="remove a stored API key")
+    delete_key.add_argument("provider", choices=PROVIDERS)
+    config_actions.add_parser("show", help="where each provider's key comes from (masked)")
     return parser
 
 
@@ -132,6 +158,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if args.command == "config":
+        return cmd_config(args, sys.stdout)
     with closing(open_database(db_path(data_dir))) as conn:
         if args.command == "record":
             return cmd_record(conn, data_dir, args, sys.stdout)
@@ -309,6 +337,74 @@ def _write_exports(conn: sqlite3.Connection, data_dir: Path, session_id: str, ou
         return 1
     print(f"Exports in {paths[0].parent}: " + ", ".join(p.name for p in paths), file=out)
     return 0
+
+
+def cmd_config(args: argparse.Namespace, out: TextIO, *, store: keys.KeyStore | None = None,
+               environ: Mapping[str, str] | None = None,
+               read_secret: Callable[[str], str] | None = None,
+               make: Callable[[str, str | None, str], LlmProvider] = make_provider) -> int:
+    """API keys. `store`, `environ`, `read_secret` and `make` let tests run without the real
+    credential store, console or network."""
+    environ = os.environ if environ is None else environ
+    try:
+        if args.config_action == "show":
+            return _config_show(out, store, environ)
+        if args.config_action == "delete-key":
+            if keys.delete_key(args.provider, store=store):
+                print(f"Key for {args.provider} removed from the {keys.KEYRING_SOURCE}.", file=out)
+            else:
+                print(f"No stored key for {args.provider}.", file=out)
+            return 0
+        return _config_set_key(args, out, store, read_secret or _read_secret, make)
+    except LlmError as exc:
+        print(f"Error: {exc.user_message()}", file=out)
+        return 1
+
+
+def _config_show(out: TextIO, store: keys.KeyStore | None, environ: Mapping[str, str]) -> int:
+    for provider in PROVIDERS:
+        found = keys.find_key(provider, store=store, environ=environ)
+        where = f"{keys.mask(found.key)} from {found.source}" if found else "not set"
+        print(f"{provider}: {where}  (default model {DEFAULT_MODELS[provider]})", file=out)
+    print("Environment variables, used when no key is stored: "
+          + ", ".join(name for names in keys.ENV_VARS.values() for name in names), file=out)
+    return 0
+
+
+def _config_set_key(args: argparse.Namespace, out: TextIO, store: keys.KeyStore | None,
+                    read_secret: Callable[[str], str],
+                    make: Callable[[str, str | None, str], LlmProvider]) -> int:
+    provider = args.provider
+    print(f"Get a key at {keys.KEY_PAGES[provider]}", file=out)
+    try:
+        key = keys.clean_key(read_secret(f"{provider} API key (not shown): "))
+    except (EOFError, KeyboardInterrupt):
+        print("\nNothing stored.", file=out)
+        return 1
+    except ValueError as exc:
+        print(f"Not stored: {exc}.", file=out)
+        return 1
+    note = " (not checked)"
+    if not args.no_check:
+        try:
+            name = make(provider, None, key).check()
+            note = f" (checked: {name} is available)"
+        except (InvalidKey, MissingKey) as exc:
+            print(f"Not stored: {exc.message}", file=out)
+            return 1
+        except LlmError as exc:
+            note = f" (could not check it: {exc.message})"
+    keys.store_key(provider, key, store=store)
+    print(f"Key {keys.mask(key)} stored in the {keys.KEYRING_SOURCE}{note}.", file=out)
+    return 0
+
+
+def _read_secret(prompt: str) -> str:
+    if sys.stdin is not None and sys.stdin.isatty():
+        import getpass
+
+        return getpass.getpass(prompt)
+    return sys.stdin.readline() if sys.stdin is not None else ""
 
 
 def _known_language(code: str) -> bool:

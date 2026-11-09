@@ -24,6 +24,11 @@ dependencies = [
     # 4.6.3: first Windows wheel without cuDNN (needs only cuBLAS 12); 5.x may move to CUDA 13.
     "ctranslate2>=4.6.3,<5",
     "av>=11",
+    # Notes (step 3). anthropic 2.x speaks API version 2026-10-21.
+    "anthropic>=2.3,<3",
+    "google-genai>=2.33,<3",
+    "keyring>=25.7,<26",
+    "pydantic>=2.14,<3",
 ]
 
 [project.optional-dependencies]

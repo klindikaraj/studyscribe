@@ -319,3 +319,27 @@ class FakeTranscriber:
             self._count += 1
             s, e = start / 16_000, end / 16_000
             yield AsrSegment(s, e, text, (AsrWord(s, e, text, 0.9),), -0.2, 0.01, 1.2)
+
+
+class DictKeyStore:
+    """In-memory stand-in for the keyring backend (Windows Credential Manager)."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.data: dict[tuple[str, str], str] = {}
+        self.fail = fail
+
+    def _check(self) -> None:
+        if self.fail:
+            raise RuntimeError("credential store unavailable")
+
+    def get_password(self, service: str, username: str) -> str | None:
+        self._check()
+        return self.data.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._check()
+        self.data[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._check()
+        del self.data[(service, username)]
