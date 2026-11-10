@@ -328,12 +328,14 @@ def run_ollama(args: argparse.Namespace) -> int:
     print(f"GPU before loading: {_gpu_text(gpu.query())}")
     print(f"Model check: {provider.check()}")
     info = provider.model_info()
-    kv = info.kv_bytes_per_token
+    kv = info.kv
     print(f"  family {info.family}, capabilities {', '.join(info.capabilities)}, thinking "
           f"values {info.thinking_values}, max context {info.context_length}")
     if kv:
-        print(f"  KV cache (f16): {kv / 1024:.0f} KiB/token = {kv * args.num_ctx / 2**30:.2f} GiB "
-              f"at {args.num_ctx:,} tokens")
+        window = (f" + {kv.window_bytes / 2**20:.0f} MiB of sliding windows"
+                  if kv.window_bytes else "")
+        print(f"  KV cache (f16): {kv.per_token / 1024:.0f} KiB/token{window} = "
+              f"{kv.bytes_for(args.num_ctx) / 2**30:.2f} GiB at {args.num_ctx:,} tokens")
     try:
         load = provider.ensure_loaded()
         print(f"Loaded in {load.load_s:.1f} s: Ollama allocated {load.size_bytes / 1e9:.2f} GB, "

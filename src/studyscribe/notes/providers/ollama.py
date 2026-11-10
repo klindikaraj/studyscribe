@@ -173,7 +173,7 @@ class ModelInfo:
     capabilities: tuple[str, ...]
     thinking_values: tuple[Any, ...] | None  # e.g. (False, True); None when not reported
     context_length: int | None  # the model's maximum
-    kv_bytes_per_token: int | None  # f16 KV cache, when the architecture fields allow it
+    kv: KvCache | None  # f16 KV cache, when the architecture fields allow it
 
     @property
     def can_think(self) -> bool:
@@ -201,37 +201,70 @@ def model_info_from_show(name: str, body: Mapping[str, Any]) -> ModelInfo:
         capabilities=tuple(body.get("capabilities") or ()),
         thinking_values=values,
         context_length=int(context) if isinstance(context, (int, float)) else None,
-        kv_bytes_per_token=kv_bytes_per_token(info),
+        kv=kv_cache(info),
     )
 
 
-def kv_bytes_per_token(info: Mapping[str, Any]) -> int | None:
-    """Bytes of f16 KV cache per token of context. Hybrid models (qwen35: Gated DeltaNet layers
-    with a full-attention layer every `full_attention_interval`) keep a cache only in the
-    attention layers. Sliding-window layers are counted as full ones (an overestimate)."""
+@dataclass(frozen=True)
+class KvCache:
+    """f16 KV cache of a model: bytes per token of context for the layers that keep every
+    token, plus a fixed amount for sliding-window layers (they keep only `window` tokens)."""
+
+    per_token: int
+    window_bytes: int = 0
+
+    def bytes_for(self, num_ctx: int) -> int:
+        return self.per_token * num_ctx + self.window_bytes
+
+
+def kv_cache(info: Mapping[str, Any]) -> KvCache | None:
+    """KV cache size from /api/show's model_info. Handles per-layer KV head counts (lists),
+    sliding-window layers (gemma4: `attention.sliding_window_pattern`, `*_swa` lengths) and
+    hybrid models whose other layers keep no KV cache (qwen35: one attention layer every
+    `full_attention_interval`)."""
     arch = info.get("general.architecture")
     if not arch:
         return None
 
+    def get(key: str) -> Any:
+        return info.get(f"{arch}.{key}")
+
     def num(key: str) -> float | None:
-        value = info.get(f"{arch}.{key}")
-        if isinstance(value, list):
-            value = max((v for v in value if isinstance(v, (int, float))), default=None)
-        return value if isinstance(value, (int, float)) else None
+        value = get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
     layers = num("block_count")
     heads = num("attention.head_count")
-    kv_heads = num("attention.head_count_kv") or heads
     embedding = num("embedding_length")
     head_dim = embedding / heads if embedding and heads else None
     key_len = num("attention.key_length") or head_dim
     value_len = num("attention.value_length") or head_dim
-    if not (layers and kv_heads and key_len and value_len):
+    kv_heads = get("attention.head_count_kv")
+    if kv_heads is None:
+        kv_heads = heads
+    if not (layers and key_len and value_len and kv_heads):
         return None
+    layers = int(layers)
+    pattern = get("attention.sliding_window_pattern")
+    window = num("attention.sliding_window")
+    key_swa = num("attention.key_length_swa") or key_len
+    value_swa = num("attention.value_length_swa") or value_len
     interval = num("full_attention_interval")
-    if interval and interval > 1:
-        layers = layers // interval
-    return int(layers * kv_heads * (key_len + value_len) * 2)
+    per_token = 0.0
+    window_bytes = 0.0
+    for layer in range(layers):
+        if interval and interval > 1 and (layer + 1) % int(interval) != 0:
+            continue  # recurrent layer: a fixed state, no KV cache
+        layer_heads = kv_heads[layer] if isinstance(kv_heads, list) else kv_heads
+        if not isinstance(layer_heads, (int, float)) or not layer_heads:
+            continue
+        sliding = (isinstance(pattern, list) and layer < len(pattern) and bool(pattern[layer])
+                   and window)
+        if sliding:
+            window_bytes += layer_heads * (key_swa + value_swa) * 2 * window
+        else:
+            per_token += layer_heads * (key_len + value_len) * 2
+    return KvCache(int(per_token), int(window_bytes))
 
 
 def think_value(effort: Effort, info: ModelInfo) -> bool | str | None:
@@ -479,7 +512,7 @@ class OllamaProvider:
         size = sizes.get(self.model) or sizes.get(_with_tag(self.model))
         if not size:
             return None
-        return size + (info.kv_bytes_per_token or 0) * self.options.num_ctx
+        return size + (info.kv.bytes_for(self.options.num_ctx) if info.kv else 0)
 
     def ensure_loaded(self) -> LoadInfo:
         """Load the model with the run's context window and check it sits entirely in GPU

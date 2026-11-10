@@ -33,7 +33,8 @@ from studyscribe.notes.providers.ollama import (
     OllamaTooOld,
     OllamaUnavailable,
     is_local,
-    kv_bytes_per_token,
+    KvCache,
+    kv_cache,
     map_error,
     model_info_from_show,
     parse_host,
@@ -463,10 +464,29 @@ def test_is_local():
 
 def test_kv_cache_of_the_hybrid_qwen35_counts_only_attention_layers():
     # 32 layers, one full-attention layer in 4: 8 layers x 4 KV heads x (256 + 256) x 2 bytes.
-    assert kv_bytes_per_token(QWEN_INFO) == 32 * 1024
+    assert kv_cache(QWEN_INFO) == KvCache(32 * 1024, 0)
     dense = {k: v for k, v in QWEN_INFO.items() if "full_attention" not in k}
-    assert kv_bytes_per_token(dense) == 128 * 1024
-    assert kv_bytes_per_token({}) is None
+    assert kv_cache(dense) == KvCache(128 * 1024, 0)
+    assert kv_cache({}) is None
+
+
+def test_kv_cache_of_gemma4_sliding_window_layers_is_fixed():
+    # /api/show of gemma4:12b-it-qat (2026-11-10): 48 layers, 5 sliding (8 KV heads of 256,
+    # window 1024) then 1 global (1 KV head of 512), repeated.
+    info = {
+        "general.architecture": "gemma4", "gemma4.block_count": 48,
+        "gemma4.attention.head_count": 16, "gemma4.embedding_length": 3840,
+        "gemma4.attention.head_count_kv": [8, 8, 8, 8, 8, 1] * 8,
+        "gemma4.attention.sliding_window_pattern": [True] * 5 + [False],
+        "gemma4.attention.sliding_window": 1024,
+        "gemma4.attention.key_length": 512, "gemma4.attention.value_length": 512,
+        "gemma4.attention.key_length_swa": 256, "gemma4.attention.value_length_swa": 256,
+    }
+    info["gemma4.attention.sliding_window_pattern"] *= 8
+    kv = kv_cache(info)
+    assert kv.per_token == 8 * 1 * 1024 * 2  # 16 KiB per token, global layers only
+    assert kv.window_bytes == 40 * 8 * 512 * 2 * 1024  # 320 MiB whatever the context
+    assert kv.bytes_for(32768) == 16 * 1024 * 32768 + 320 * 2**20
 
 
 def test_model_info_from_show():

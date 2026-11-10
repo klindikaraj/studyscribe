@@ -780,6 +780,41 @@ Reading:
 - The `identifiers: ["S1", "S2"]` answer of the tiny request did not change with a clearer
   field description; with thinking on, the same request ignored "at most eight words".
 
+`gemma4:12b-it-qat` with prompt v4, effort none (Claude, 2026-11-10; pulled after the user
+confirmed). `/api/show`: family `gemma4` (the sampling table's key is right), 11.9B Q4_0,
+thinking on/off only, default sampling temperature 1, top_k 64, top_p 0.95 (= the table).
+48 layers: 40 sliding-window layers (8 KV heads of 256, window 1024) and 8 global ones (1 KV
+head of 512). The first KV estimate took the largest head count for every layer (about 24 GiB
+at 32k, so the pre-load check would have refused the model): fixed, now 16 KiB/token plus
+320 MiB of windows = 0.81 GiB at 32k.
+
+| | qwen3.5:9b v4 | gemma4:12b-it-qat v4 |
+|---|---|---|
+| Allocated / GPU in use after loading | 6.58 GB / 8.3-8.7 GB | 8.02 GB, all on the GPU / 10.4-10.8 GB (1.5 GB left) |
+| Load | 7-8 s | 87 s cold, 17 s warm; once the load crashed: `CUDA error: shared object initialization failed`, exit 0xc0000409 in Ollama's `cuda_v13` runner (not out of memory); the next load worked |
+| Generation | 44-45 tokens/s | 20-21 tokens/s (the first request after the cold load: 0.7 tokens/s) |
+| Italian block | 37 s; 6 concepts, 2 definitions, 8 code items (0 flagged; "loss function", `Adam`, `relu` as code); "TEC" → "tensor" ✗ | 90 s; 14 concepts, 4 definitions, 10 code items, 7 flagged (`torch.manual_seed(42)`, `criterion(y_pred, y_real)`, `YPRED[..., 1]` rebuilt or invented); "TEC" → "slicing" ✗ |
+| English block | 28 s; 4 concepts, 3 definitions, 8 code items, all right | 53 s; 4 concepts, 2 definitions, 6 code items, right but `lastName.length - 1` lost its brackets; "plus equals" → `+=` listed as a correction |
+
+Reading: Gemma writes richer Italian concepts but invents more code, is 2.2 times slower,
+leaves 1.5 GB of VRAM and crashed once on load. Neither model finds "TEC" → `detach` with
+thinking off. qwen3.5:9b stays the default.
+
+Correction pass, analysis only (2026-11-10). `words_json` holds Whisper's probability of
+every word:
+
+- "TEC" (S186) has probability 0.35, among the lowest 0.2% of the Italian lecture's words; its
+  neighbours too ("di" 0.41, "per" 0.31).
+- Lines with a word below 0.4: Italian 11 of 241 (5%), English 189 of 1415 (13%), mostly
+  function words ("the", "at", "Okay"). Keeping only words of 3+ letters that occur at most
+  twice in the lecture: Italian 3 lines (Adam, significa, TEC), English 11 (known, jack, team,
+  Holland, left, stems, left, frozen, Adam, keyboard, indent). With 2 lines of context on each
+  side: about 1.4k and 5k characters.
+- Confident errors are not caught: "PyTorch.neuralNetwork" has 0.82-0.87 and "YPRED" 0.67.
+  They are code-form problems, which the map's code rules handle (qwen v4 wrote
+  `torch.nn.Linear`).
+- The threshold is tuned on the only known error; how many real errors it misses is unknown.
+
 Changes after the first block results (2026-11-10): prompt v2 in the probe (explicit code and correction
 rules, a made-up example that avoids the acceptance cases, S-numbers only in refs), an output
 cap of 16384 with thinking on, `--expect WORD` to find a word in the notes, and a check for
