@@ -309,9 +309,12 @@ whether two identical seeded requests give the same text.
    cloud models only
    if the user wants them later (Gemini when it answers, Claude once the account has credit,
    after asking). A checklist in
-   `docs/manual-test-notes.md`: timestamps to click, definitions to compare with the audio,
-   "TEC" (S186, 0:14:08) listed in "Words to check by listening", and no invented method name
-   for it in the notes; code items with a warning checked against the audio.
+   `docs/manual-test-notes.md` (written in piece 5; it does not exist yet): timestamps to
+   click, definitions to compare with the audio, "TEC" (S186, 0:14:08) listed in "Words to
+   check by listening" and kept as "TEC" or put in the unclear points, never replaced by a
+   method name; code items with a warning checked against the audio. Library names stay as
+   heard: S88's "PyTorch.neuralNetwork" is not expected as `torch.nn` (decision of
+   2026-11-16: the earlier criterion "`torch.nn.Linear` is there" contradicted the no-fix rule).
 
 ### Piece 2 in detail (agreed 2026-11-16)
 
@@ -463,9 +466,11 @@ probes showed that `qwen3.5:9b` cannot do it reliably, in the map or in a separa
 thinking off or on (see "Findings so far"), so **automatic corrections are a known limit of
 step 3**. The transcript stays faithful to the audio and so do the notes' words.
 
-- Code form stays: the map writes code read aloud as code ("PyTorch.neuralNetwork" →
-  `torch.nn`, "ipsilon pred" → `y_pred`). These acceptance cases never appear in a prompt, and
-  the prompts have no example at all (the made-up example was copied into the notes).
+- Code form stays: the map writes code read aloud as code ("ipsilon pred" → `y_pred`, "first
+  name dot length" → `firstName.length`). Library names stay as heard: "PyTorch.neuralNetwork"
+  is not turned into `torch.nn`, which would be a fix from library knowledge (user's decision,
+  2026-11-16). The acceptance cases never appear in a prompt, and the prompts have no example
+  at all (the made-up example was copied into the notes).
 - Code items whose text contains an S-number fail validation and are asked again.
 - **Code-name check** (`code_check.py`), a warning only. Every name in a code item (string
   literals and common keywords left out) is split into its words (snake_case, camelCase, dots);
@@ -475,8 +480,8 @@ step 3**. The transcript stays faithful to the audio and so do the notes' words.
   words are; partly found when some are, or when its words are found only elsewhere in the
   lecture (added in the implementation: `y_pred` cited on "y previsti" while `YPRED` is said
   four lines later); missing when none is found anywhere. The item gets:
-  - `ok`: every name found (`y_pred` from "ipsilon pred", `torch.nn.Linear` from "PyTorch
-    neural network Linear");
+  - `ok`: every name found (`y_pred` from "ipsilon pred", `nn.MSELoss` from "mean squared
+    error loss");
   - `check` ("to verify"): a name only partly found;
   - `unsupported` ("name not in the transcript, to verify"): a name with no word found
     (`misure_notte` for "the two tensors").
@@ -1134,3 +1139,68 @@ Reduce sizes after the new maxima (3 h lecture, estimate at the measured 65 toke
   50 tokens/s, 15 at 45. With 55 tokens per item: 3.9k / 3.4k / 4.9k. With a pessimistic 85
   tokens per item the final would be 7.4k and the partials would no longer fit one final
   reduce (the pipeline would stop). Reduce requests are still not measured.
+
+### Decisions after the v5.1/v6 probe, and the code-section experiment (2026-11-16)
+
+User's decisions: v5.1 is the default map prompt (restored in commit 505b07e, identical to
+42ebfb2); library names stay as heard, so the criterion "`torch.nn.Linear` is there" is
+withdrawn (it contradicted the no-fix rule); after the experiment below the map prompt is
+frozen until the piece 5 acceptance.
+
+Experiment, from v5.1: Studio's section `examples` renamed `code` (heading "Code"/"Codice",
+instruction "Code the lecturer reads aloud or names, as it would appear in a source file."),
+the code item's schema descriptions set back to v4's (`code`: "as it would appear in a source
+file; never an S-number"; `explanation`: none). Seeds 1 and 2, same lines, effort none.
+Answers in `%TEMP%\studyscribe-probe\` with the suffix `-codekey`.
+
+| | en s1 | en s2 | it s1 | it s2 |
+|---|---|---|---|---|
+| Time / output tokens | 17.5 s / 767 | 31.0 s / 1,433 | 35.0 s / 1,569 | 40.3 s / 1,823 |
+| Generation tokens/s | 50.1 | 49.9 | 49.4 | 49.4 |
+| Summary / outline / concepts / definitions / code / questions / open | 2/3/4/3/**0**/1/1 | 2/3/4/3/10/1/0 | 3/3/5/3/5/2/1 | 3/3/5/3/6/2/1 |
+| Code ok / check / unsupported | — | 10/0/0, but spoken words (`'first name[first name length - 1]'`, `'my string = my name is + name'`) | 2/1/**2** | 1/3/**2** |
+| Coverage warning | **yes** (up to S305 of S327) | no | **yes** (up to S186 of S241) | no |
+| Word corrections | none | none | **`output_tensor.detach()`** in code (the open point quotes TEC and adds "solitamente 'detach'") | none, TEC in the open points |
+
+- What it fixed: none of v5.1's rebuilt code is left (`Linear(in_features=...)`,
+  `Adam(model.parameters(), ...)`, `modelo.addestramento(...)`).
+- What it broke: new code rebuilt from a description in both Italian runs (`theta = w - u *
+  eta` and `theta_new = theta_old - eta * u` from S153-S154, `optimizer.zero_grad()` from
+  S169-S170); English code missing (s1) or written as words (s2); two coverage warnings; one
+  correction in code. Definitions (en 3 and 3, faithful), questions and Italian concepts held.
+- Verdict: fails the agreed criteria; v5.1 with `examples` stays (template and schema were not
+  changed). The map prompt is now frozen.
+- Error of mine: the experiment's answers were first saved under the same names as v5.1's
+  (same prompt version and seed) and overwrote them; v5.1's figures survive in the table
+  above and in the console logs, not as JSON. The probe now adds a hash of the system prompt
+  and schema to every file name (commit b25d0d4).
+
+Reduce sized on counted tokens (user's request, commits 8fcbe77, 1fec6a3, abac999):
+- Every part's notes are counted by the provider (`count_tokens`) as the reduce input holds
+  them; the reduce system prompt is counted once; every reduce request is counted before it is
+  sent and carries the count (`LlmRequest.input_tokens`), which Ollama's guard 1 now uses
+  instead of the 2.5 characters per token estimate. A request over the context is refused
+  before sending (a bug report message).
+- Expected reduce answers: targets times the tokens per item measured on the current parts,
+  times 1.25, plus 50. A partial group never covers more speech than an answer under the cap
+  can hold (`plan_groups` got a weight limit); the final targets are scaled down, with a
+  warning and `final_targets_scaled` in the stats, when the template asks for more than one
+  answer can hold; the run stops only if one item per section would not fit.
+- Parts too large to pair are shortened one by one (a partial reduce on one part, with its
+  share of the final targets and no slack) instead of stopping; the run stops only if a
+  shortening does not shorten, or after `max_levels`.
+- Tests with `FakeLlm` answering longer than expected (about 100-160 tokens per item, against
+  55-69 measured): more partial reduces and a finished run; first partial answers three times
+  too long: shortened, finished; a small reduce cap: every answer under it.
+- Dry run on the two transcripts with the fake (no model): it 1 final reduce; 3 h 2 partial
+  reduces and the final one, at about 51 tokens per item all answers under 4.7k; at about 76
+  the final targets are scaled to 94%.
+- Unverified: real reduce answers have never been measured; with real Ollama every
+  `count_tokens` is a one-token request (a prefill of the counted text, about 1-2 s per part on
+  the 3060). The convergence needs the reduce input budget (16k) to be well above the final
+  answer (at most 8,192); a smaller context (`num_ctx` 16384) would not converge on 3 hours.
+
+To check at the acceptance (piece 5): generation speed was 51-52 tokens/s in the first v4/v5
+runs of 2026-11-16, 44-45 in the v5.1/v6 runs a few hours later and 49-50 in the experiment,
+same model and settings. Not investigated; at the acceptance, run with the GPU free (no other
+program using it) and compare.
