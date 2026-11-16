@@ -1,7 +1,8 @@
-"""Queries on courses, sessions and audio segments."""
+"""Queries on courses, sessions, audio segments, transcripts and notes."""
 
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
 import unicodedata
@@ -268,3 +269,157 @@ def transcript_states(conn: sqlite3.Connection) -> dict[str, str]:
             percent = 100 * row["done_ms"] // max(row["audio_ms"], 1)
             states[row["session_id"]] = f"{row['status']} {percent}%"
     return states
+
+
+# --- notes: settings, templates, generations, LLM calls ------------------------------------------
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return default if row is None else row["value"]
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)"
+                 " ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+def list_settings(conn: sqlite3.Connection) -> dict[str, str]:
+    return {row["key"]: row["value"]
+            for row in conn.execute("SELECT key, value FROM settings ORDER BY key")}
+
+
+def upsert_template(conn: sqlite3.Connection, template_id: str, title_json: str,
+                    description: str, template_json: str, builtin: bool) -> None:
+    conn.execute(
+        "INSERT INTO templates (id, title_json, description, template_json, builtin, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET title_json ="
+        " excluded.title_json, description = excluded.description, template_json ="
+        " excluded.template_json, builtin = excluded.builtin, updated_at = excluded.updated_at",
+        (template_id, title_json, description, template_json, int(builtin), utc_now_iso()))
+
+
+def get_template(conn: sqlite3.Connection, template_id: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
+
+
+def list_templates(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM templates ORDER BY builtin DESC, id").fetchall()
+
+
+def create_notes(conn: sqlite3.Connection, *, session_id: str, transcript_run_id: int,
+                 provider: str, model: str, template_id: str, template_json: str,
+                 language: str, language_source: str, prompt_version: str, prompt_hash: str,
+                 options_json: str, blocks_json: str) -> int:
+    cursor = conn.execute(
+        "INSERT INTO generated_notes (session_id, transcript_run_id, status, provider, model,"
+        " template_id, template_json, language, language_source, prompt_version, prompt_hash,"
+        " options_json, blocks_json, started_at)"
+        " VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (session_id, transcript_run_id, provider, model, template_id, template_json, language,
+         language_source, prompt_version, prompt_hash, options_json, blocks_json,
+         utc_now_iso()))
+    return cursor.lastrowid
+
+
+def get_notes(conn: sqlite3.Connection, notes_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM generated_notes WHERE id = ?", (notes_id,)).fetchone()
+
+
+def get_open_notes(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
+    """The unfinished ('running' or 'interrupted') generation of a session, if any."""
+    return conn.execute(
+        "SELECT * FROM generated_notes WHERE session_id = ? AND status IN"
+        " ('running', 'interrupted')", (session_id,)).fetchone()
+
+
+def get_latest_done_notes(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM generated_notes WHERE session_id = ? AND status = 'done'"
+        " ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+
+
+def list_notes_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM generated_notes WHERE status = ? ORDER BY id",
+                        (status,)).fetchall()
+
+
+def set_notes_status(conn: sqlite3.Connection, notes_id: int, status: str,
+                     error: str | None = None) -> None:
+    finished = utc_now_iso() if status in ("done", "failed") else None
+    conn.execute("UPDATE generated_notes SET status = ?, error = ?, finished_at = ? WHERE id = ?",
+                 (status, error, finished, notes_id))
+
+
+def finish_notes(conn: sqlite3.Connection, notes_id: int, *, content_json: str,
+                 uncertain_json: str, stats_json: str, content_md: str | None = None) -> None:
+    conn.execute(
+        "UPDATE generated_notes SET status = 'done', error = NULL, finished_at = ?,"
+        " content_json = ?, content_md = ?, uncertain_json = ?, stats_json = ? WHERE id = ?",
+        (utc_now_iso(), content_json, content_md, uncertain_json, stats_json, notes_id))
+
+
+def add_llm_call(conn: sqlite3.Connection, notes_id: int, *, stage: str, block: int,
+                 attempt: int, status: str, model_version: str | None = None,
+                 request_id: str | None = None, input_tokens: int | None = None,
+                 output_tokens: int | None = None, thinking_tokens: int | None = None,
+                 cached_tokens: int | None = None, cost_usd: float | None = None,
+                 list_cost_usd: float | None = None, duration_s: float | None = None,
+                 load_s: float | None = None, prefill_s: float | None = None,
+                 generate_s: float | None = None, output_json: str | None = None,
+                 error: str | None = None) -> int:
+    cursor = conn.execute(
+        "INSERT INTO llm_calls (notes_id, stage, block, attempt, status, model_version,"
+        " request_id, input_tokens, output_tokens, thinking_tokens, cached_tokens, cost_usd,"
+        " list_cost_usd, duration_s, load_s, prefill_s, generate_s, output_json, error,"
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (notes_id, stage, block, attempt, status, model_version, request_id, input_tokens,
+         output_tokens, thinking_tokens, cached_tokens, cost_usd, list_cost_usd, duration_s,
+         load_s, prefill_s, generate_s, output_json, error, utc_now_iso()))
+    return cursor.lastrowid
+
+
+def list_llm_calls(conn: sqlite3.Connection, notes_id: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM llm_calls WHERE notes_id = ? ORDER BY id",
+                        (notes_id,)).fetchall()
+
+
+def accepted_map_answers(conn: sqlite3.Connection, notes_id: int) -> dict[int, str]:
+    """Block index -> the raw answer of its last accepted map call (to resume)."""
+    rows = conn.execute(
+        "SELECT block, output_json FROM llm_calls WHERE notes_id = ? AND stage = 'map'"
+        " AND status = 'ok' AND output_json IS NOT NULL ORDER BY id", (notes_id,))
+    return {row["block"]: row["output_json"] for row in rows}
+
+
+def model_timings(conn: sqlite3.Connection, provider: str, model: str,
+                  limit: int = 50) -> list[sqlite3.Row]:
+    """Recent successful calls of a model with their timings (speed estimates)."""
+    return conn.execute(
+        "SELECT c.input_tokens, c.cached_tokens, c.output_tokens, c.prefill_s, c.generate_s"
+        " FROM llm_calls c JOIN generated_notes g ON g.id = c.notes_id"
+        " WHERE g.provider = ? AND g.model = ? AND c.status = 'ok' AND c.generate_s > 0"
+        " ORDER BY c.id DESC LIMIT ?", (provider, model, limit)).fetchall()
+
+
+def notes_states(conn: sqlite3.Connection) -> dict[str, str]:
+    """Session ID -> short notes state for listings: an open generation's status with its
+    accepted map blocks ("interrupted 5/15"), else the latest done generation's model, else
+    'failed' when every generation failed."""
+    open_, done, failed = {}, {}, set()
+    for row in conn.execute(
+        "SELECT g.session_id, g.status, g.model, g.blocks_json,"
+        " (SELECT COUNT(DISTINCT c.block) FROM llm_calls c WHERE c.notes_id = g.id"
+        "  AND c.stage = 'map' AND c.status = 'ok') AS maps"
+        " FROM generated_notes g ORDER BY g.id"
+    ):
+        sid = row["session_id"]
+        if row["status"] in ("running", "interrupted"):
+            blocks = len(json.loads(row["blocks_json"] or "[]"))
+            open_[sid] = f"{row['status']} {row['maps']}/{blocks}"
+        elif row["status"] == "done":
+            done[sid] = f"done ({row['model']})"
+        else:
+            failed.add(sid)
+    return {sid: open_.get(sid) or done.get(sid) or "failed"
+            for sid in {*open_, *done, *failed}}
