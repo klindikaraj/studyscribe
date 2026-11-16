@@ -425,3 +425,60 @@ def studio_notes(refs, *, summary: str = "A summary.", code: str = "x = 1", **se
 def echo_notes(request, index) -> str:
     """Responder: valid Studio notes citing the request's own input."""
     return studio_notes(input_refs(request))
+
+
+
+def prompt_targets(system: str) -> dict:
+    """Section key -> items asked for, read from a v5.1 map or reduce prompt's section lines
+    ("About 4 items.", "About 3 sentences ...", "up to about 2 items", "Every one ...": 6)."""
+    import re
+
+    found = {}
+    for key, rest in re.findall(r'^- "(\w+)": (.*)$', system, flags=re.MULTILINE):
+        numbers = re.findall(r"(?:About|about) (\d+) (?:item|sentence)", rest)
+        found[key] = int(numbers[-1]) if numbers else 6
+    return found
+
+
+def targeted_notes(padding: int = 0, *, ignore_targets_for: int = 0, extra: int = 0):
+    """Responder: Studio notes with as many items per section as the prompt asks for (plus
+    `extra`), each padded with `padding` characters, citing the request's own input spread over
+    all of it. The first `ignore_targets_for` partial reduces answer as if the targets were
+    three times as large (a model that writes more than asked)."""
+    import json
+
+    state = {"partials": 0}
+
+    def respond(request, index):
+        refs = input_refs(request)
+        targets = prompt_targets(request.system)
+        if "into the notes of one longer part" in request.system:
+            state["partials"] += 1
+            if state["partials"] <= ignore_targets_for:
+                targets = {k: v * 3 for k, v in targets.items()}
+        pad = " " + "x" * padding if padding else ""
+
+        def ref(i):  # spread over the input, the last line always cited
+            return refs[-1] if i == 0 else refs[(i * 7919) % len(refs)]
+
+        def n(key):
+            return targets.get(key, 1) + extra
+
+        data = {
+            "summary": " ".join(f"Sentence {i}{pad}." for i in range(n("summary"))),
+            "outline": [{"title": f"Topic {i}{pad}", "ref": ref(i)} for i in range(n("outline"))],
+            "concepts": [{"name": f"Idea {i}", "explanation": f"An idea{pad}.", "refs": [ref(i)]}
+                         for i in range(n("concepts"))],
+            "definitions": [{"term": f"Term {i}", "definition": f"A term{pad}.",
+                             "refs": [ref(i)]} for i in range(n("definitions"))],
+            "examples": [{"code": f"x{i} = {i}", "explanation": f"Sets x{pad}.",
+                          "refs": [ref(i)]} for i in range(n("examples"))],
+            "questions": [{"question": f"Why {i}?", "answer": f"Because{pad}.",
+                           "difficulty": "easy", "refs": [ref(i)]}
+                          for i in range(n("questions"))],
+            "open_points": [{"point": f"Point {i}{pad}", "refs": [ref(i)]}
+                            for i in range(targets.get("open_points", 0))],
+        }
+        return json.dumps(data)
+
+    return respond

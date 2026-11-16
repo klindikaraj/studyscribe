@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from fakes import FakeLlm, echo_notes, input_refs, studio_notes
+from fakes import FakeLlm, echo_notes, input_refs, studio_notes, targeted_notes
 
 from studyscribe.notes.blocks import Block, cut_blocks
 from studyscribe.notes.pipeline import (
@@ -10,6 +10,7 @@ from studyscribe.notes.pipeline import (
     Lecture,
     NotesError,
     PipelineOptions,
+    count_items,
     coverage_gap,
     generate_notes,
 )
@@ -214,14 +215,89 @@ def test_long_lecture_uses_partial_reduces():
     assert result.notes["outline"]
 
 
-def test_partial_reduces_that_do_not_shrink_stop():
-    big = "x" * 3000
+def test_final_targets_are_scaled_down_when_the_answer_would_not_fit():
+    progress = []
+    result, llm, calls, _ = run(targeted_notes(padding=600), minutes=75,
+                                options=options(reduce_max_input=40_000),
+                                on_progress=progress.append)
+    scaled = result.stats["reduce"]["final_targets_scaled"]
+    assert 0 < scaled < 1
+    assert any("of the template's items" in p for p in progress)
+    assert calls[-1].stage == "reduce" and calls[-1].usage.output_tokens <= 8192
 
+
+def test_final_notes_that_cannot_fit_even_scaled_stop_before_any_reduce():
+    calls = []
+    lines = lecture_lines(75)
+    with pytest.raises(NotesError, match="even with one item per section"):
+        generate_notes(FakeLlm(targeted_notes(padding=600)), STUDIO, lines, cut_blocks(lines),
+                       LECTURE, options=options(reduce_output_tokens=600), on_call=calls.append)
+    assert {c.stage for c in calls} == {"map"}  # no reduce was sent
+
+
+def test_parts_that_never_get_shorter_stop():
     def responder(request, index):
-        return studio_notes(input_refs(request), summary=big)
+        refs = input_refs(request)
+        if "longer part" in request.system:  # partial reduces copy every item back
+            return json.dumps({"summary": "S.", "outline": [], "concepts": [
+                {"name": f"c{i}", "explanation": "x" * 400, "refs": [refs[0]]}
+                for i in range(12)], "definitions": [], "examples": [], "questions": [],
+                "open_points": []})
+        return targeted_notes(padding=300)(request, index)
 
-    with pytest.raises(NotesError, match="do not get shorter|too long"):
-        run(responder, minutes=75, options=options(reduce_max_input=2500))
+    with pytest.raises(NotesError, match="do not get shorter"):
+        run(responder, minutes=75, options=options(reduce_max_input=1500))
+
+
+def test_reduce_groups_follow_counted_tokens_when_outputs_are_longer_than_expected():
+    # 3 hours of blocks; every item is long (about 100 tokens instead of 55-69), so the map
+    # answers are much larger than the estimate: the pipeline must make more partial reduces
+    calls = []
+    lines = lecture_lines(180)
+    blocks = cut_blocks(lines)
+    llm = FakeLlm(targeted_notes(padding=400))
+    result = generate_notes(llm, STUDIO, lines, blocks, LECTURE, options=options(),
+                            on_call=calls.append)
+    stages = [c.stage for c in calls]
+    assert stages.count("map") == len(blocks) == 12
+    assert stages.count("partial") >= 3 and stages[-1] == "reduce"
+    reduces = [r for r in llm.requests if r.user.startswith('[{"part"')]
+    room = options().max_input_tokens(8192)
+    assert all(r.input_tokens is not None and r.input_tokens <= room for r in reduces)
+    assert all(r.input_tokens == llm.count_tokens(r.system, r.user) for r in reduces)
+    assert result.stats["reduce"]["partial"] >= 3
+    assert result.stats["reduce"]["tokens_per_item"] > 90
+
+
+def test_parts_too_large_to_pair_are_shortened_not_stopped():
+    # the first partial reduces write three times what they are asked: two of them no longer
+    # fit one request, so they are shortened one by one and the run finishes
+    progress = []
+    result, llm, calls, _ = run(targeted_notes(padding=300, ignore_targets_for=4),
+                                minutes=120, options=options(reduce_max_input=12_000),
+                                on_progress=progress.append)
+    assert result.stats["reduce"]["shortened"] >= 1
+    assert any("(shortening one part)" in p for p in progress)
+    assert [c.stage for c in calls][-1] == "reduce"
+
+
+def test_partial_groups_stay_under_the_output_cap():
+    # a reduce cap so small that only short groups may be merged at once
+    calls = []
+    lines = lecture_lines(120)
+    llm = FakeLlm(targeted_notes(padding=100))
+    generate_notes(llm, STUDIO, lines, cut_blocks(lines), LECTURE,
+                   options=options(reduce_output_tokens=3000, reduce_max_input=6000),
+                   on_call=calls.append)
+    for call in calls:
+        if call.stage in ("partial", "reduce"):
+            assert call.usage.output_tokens <= 3000
+
+
+def test_count_items():
+    assert count_items({"summary": "One. Two! Three?", "outline": [1, 2], "x": []}) == 5
+    assert count_items({"summary": "no full stop"}) == 1
+    assert count_items({"summary": ""}) == 0
 
 
 def test_resume_skips_blocks_already_accepted():
