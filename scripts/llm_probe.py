@@ -6,6 +6,8 @@ Usage:
     .venv\\Scripts\\python scripts\\llm_probe.py --provider ollama --data-dir PATH
         --session ID [--session ID ...] [--block-from 0:30:00] [--block-minutes 15]
         [--model qwen3.5:9b] [--num-ctx 32768] [--effort none|low|medium|high] [--allow-cpu]
+    .venv\\Scripts\\python scripts\\llm_probe.py --corrections --data-dir PATH --session ID
+        [--effort none|high]                                 (Ollama: the correction pass)
     .venv\\Scripts\\python scripts\\llm_probe.py --provider gemini [--model gemini-3.8-flash]
         [--effort low|medium|high] [--paid]
     .venv\\Scripts\\python scripts\\llm_probe.py --provider gemini --count-only
@@ -36,8 +38,10 @@ import re
 import sqlite3
 import sys
 import tempfile
+from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -257,6 +261,53 @@ BLOCK_SYSTEM_V4 = (BLOCK_SYSTEM_V3[:BLOCK_SYSTEM_V3.index(_EXAMPLE_START)]
 
 PROMPTS = {"v1": BLOCK_SYSTEM, "v2": BLOCK_SYSTEM_V2, "v3": BLOCK_SYSTEM_V3,
            "v4": BLOCK_SYSTEM_V4}
+
+
+# --- draft correction pass (2026-11-16) ----------------------------------------------------------
+# One request per lecture, before the map: only the words Whisper was unsure about, each with a
+# few lines of context, and the model decides "keep" or "fix" for every one of them. Accepted
+# fixes would become the map's glossary. The candidates are chosen by code, not by the model.
+
+LOW_PROBABILITY = 0.4  # Whisper's word probability below which a word is a candidate
+MIN_LETTERS = 3  # shorter words are mostly function words ("the", "di")
+RARE_MAX_COUNT = 2  # a word said more often in the lecture is taken as known
+CONTEXT_LINES = 2  # transcript lines shown on each side of a candidate line
+CORRECTION_OUTPUT_TOKENS = 4096
+CORRECTION_MAX_WORDS = 3  # "written" replaces one word: a longer text is a rewrite
+WORD = re.compile(r"\w+")
+
+
+class WordVerdict(_Strict):
+    ref: int = Field(description="S-number of the line with the marked word")
+    heard: str = Field(description="the marked word, exactly as between [[ and ]]")
+    reason: str = Field(description="one short sentence: why it fits, or what was said instead")
+    decision: Literal["keep", "fix"]
+    written: str = Field(description="the word for the notes: the marked word itself for "
+                         "\"keep\"; for \"fix\" the intended word, code in code form")
+
+
+class CorrectionPass(_Strict):
+    words: list[WordVerdict]
+
+
+CORRECTION_SYSTEM = """You check the words a speech recogniser was unsure about in the automatic
+transcript of a lecture. Lecture: "{title}". Language of the lecture: {language}.
+
+The input holds excerpts of the transcript, lines "S<n> text". In some lines one or more words
+are marked like [[this]]: the recogniser gave them a low confidence. Decide for every marked
+word:
+- "keep" when the word fits the sentence and the topic. Low confidence alone is not an error:
+  most marked words are right. Also "keep" when the word looks wrong but you are not certain
+  what was said.
+- "fix" only when the word does not fit and the context makes the intended word certain: a term
+  the lecturer uses in the nearby lines, a code element (keyword, function, method, variable)
+  that the sentence needs, or a word that sounds alike and is the only one that makes sense.
+  "written" is then the intended word as it should appear in study notes, code in code form.
+Never translate, never rewrite the sentence, never change a word that is not marked. "written"
+replaces only the marked word: at most three words.
+Answer with one item per marked word, in the order of the lines, as JSON that follows this
+schema:
+{schema}"""
 # Items per hour of speech for the v3 targets (the Studio template's rates, scaled to a block).
 TARGETS_PER_HOUR = {"topics": 16, "concepts": 24, "definitions": 16}
 EXAMPLE_TEXTS = ("scores.push", "totalScore", "newScore", "bush")  # copied from the example?
@@ -288,6 +339,9 @@ def main() -> int:
                         help="ollama only: draft map prompt of the block test")
     parser.add_argument("--expect", action="append", default=[], metavar="WORD",
                         help="ollama only: report where WORD appears in the block's notes")
+    parser.add_argument("--corrections", action="store_true",
+                        help="ollama only: the correction pass on every --session (one request "
+                        "each) instead of the tiny request and the block test")
     args = parser.parse_args()
     if args.session and args.data_dir is None:
         parser.error("--session needs --data-dir")
@@ -343,6 +397,10 @@ def run_ollama(args: argparse.Namespace) -> int:
               f"({'entirely on the GPU' if load.on_gpu_entirely else 'PARTLY ON THE CPU'}), "
               f"context {load.context_length:,}")
         print(f"GPU after loading: {_gpu_text(load.gpu_after)}")
+        if args.corrections:
+            for session_id in args.session:
+                correction_probe(provider, args, session_id)
+            return 0
         if not args.count_only:
             first = probe_request(provider, args.effort, free_tier=False)
             second = probe_request(provider, args.effort, free_tier=False, quiet=True)
@@ -490,6 +548,129 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
         print(f"  {word!r}: " + (f"in {', '.join(where)}" if where else "NOT FOUND"))
 
 
+def correction_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: str) -> None:
+    rows, language, title = load_transcript(args.data_dir, session_id)
+    if rows is None:
+        return
+    suspects = suspect_words(rows)
+    if not suspects:
+        print(f"\n{session_id}: no candidate words, nothing to send")
+        return
+    user = correction_excerpts(rows, suspects)
+    cap = _output_cap(provider, args.effort, CORRECTION_OUTPUT_TOKENS)
+    system = CORRECTION_SYSTEM.format(
+        title=title,
+        language=LANGUAGE_NAMES.get(language or "", language or "unknown"),
+        schema=json.dumps(CorrectionPass.model_json_schema(), separators=(",", ":")))
+    print(f"\nCorrection pass on {session_id} ({language}): {len(suspects)} lines with "
+          f"{sum(map(len, suspects.values()))} candidate words (probability < {LOW_PROBABILITY}, "
+          f"{MIN_LETTERS}+ letters, at most {RARE_MAX_COUNT} times in the lecture), "
+          f"{len(system) + len(user):,} characters of prompt, output cap {cap:,} tokens")
+    for n, words in suspects.items():
+        print(f"  S{n} [{clock(rows[n - 1]['start_ms'])}] {', '.join(words)}")
+    request = LlmRequest(system=system, user=user, schema=CorrectionPass.model_json_schema(),
+                         max_output_tokens=cap, effort=args.effort)
+    response = call_with_retry(
+        lambda: provider.generate(request),
+        on_wait=lambda reason, s: print(f"  waiting {s:.0f} s ({reason})"),
+    )
+    _end_progress()
+    usage = response.usage
+    print(f"Answer in {response.duration_s:.1f} s: input {usage.input_tokens:,} tokens, output "
+          f"{usage.output_tokens:,} tokens (thinking {usage.thinking_tokens})")
+    _print_timings(response)
+    out = Path(tempfile.gettempdir()) / (
+        f"studyscribe-probe-corrections-{session_id}-{args.effort}.json")
+    out.write_text(response.text, encoding="utf-8")
+    try:
+        answer = CorrectionPass.model_validate_json(response.text)
+    except ValidationError as exc:
+        print(f"INVALID JSON ({exc.error_count()} errors), saved to {out}")
+        return
+    print(f"Valid JSON, saved to {out}")
+    answered = set()
+    accepted = []
+    for item in answer.words:
+        problem = check_verdict(item, suspects)
+        key = (item.ref, _norm(item.heard))
+        if not problem and key in answered:
+            problem = "answered twice"
+        answered.add(key)
+        if item.decision == "fix" and not problem:
+            accepted.append(item)
+        status = "" if not problem else f"  <- REJECTED: {problem}"
+        print(f"  S{item.ref} {item.heard!r}: {item.decision.upper()}"
+              + (f" -> {item.written!r}" if item.decision == "fix" else "")
+              + f"{status}\n      reason: {item.reason}")
+    missing = [f"S{n} {w}" for n, words in suspects.items() for w in words
+               if (n, _norm(w)) not in answered]
+    fixes = sum(item.decision == "fix" for item in answer.words)
+    print(f"  {len(answer.words)} answers, {fixes} fixes proposed, {len(accepted)} pass the "
+          f"checks: " + (", ".join(f"{i.heard!r} -> {i.written!r} (S{i.ref})" for i in accepted)
+                         or "none"))
+    print(f"  candidates without an answer (kept): {', '.join(missing) if missing else 'none'}")
+
+
+def suspect_words(rows) -> dict[int, list[str]]:
+    """S-number -> the words of that line Whisper was unsure about: probability below
+    LOW_PROBABILITY, at least MIN_LETTERS letters, said at most RARE_MAX_COUNT times in the
+    lecture (counted on Whisper's words, punctuation removed, case ignored)."""
+    words = [json.loads(row["words_json"] or "[]") for row in rows]
+    counts = Counter(_norm(w[2]) for line in words for w in line)
+    found: dict[int, list[str]] = {}
+    for n, line in enumerate(words, start=1):
+        for word in line:
+            core = _norm(word[2])
+            if (word[3] < LOW_PROBABILITY and sum(c.isalpha() for c in core) >= MIN_LETTERS
+                    and counts[core] <= RARE_MAX_COUNT):
+                found.setdefault(n, []).append(word[2].strip(" .,;:!?\"'"))
+    return found
+
+
+def correction_excerpts(rows, suspects: dict[int, list[str]]) -> str:
+    """Excerpts of CONTEXT_LINES lines around every candidate line (overlapping excerpts are
+    joined), with the candidate words marked as [[word]]. Lines are rebuilt from Whisper's words,
+    which join to exactly the segment's text."""
+    spans: list[list[int]] = []
+    for n in sorted(suspects):
+        lo, hi = max(1, n - CONTEXT_LINES), min(len(rows), n + CONTEXT_LINES)
+        if spans and lo <= spans[-1][1] + 1:
+            spans[-1][1] = hi
+        else:
+            spans.append([lo, hi])
+    parts = []
+    for i, (lo, hi) in enumerate(spans, start=1):
+        lines = [f"--- excerpt {i}"]
+        for n in range(lo, hi + 1):
+            marked = set(suspects.get(n, []))
+            text = "".join(
+                w[2].replace(core, f"[[{core}]]", 1) if (core := w[2].strip(" .,;:!?\"'"))
+                in marked and w[3] < LOW_PROBABILITY else w[2]
+                for w in json.loads(rows[n - 1]["words_json"] or "[]"))
+            lines.append(f"S{n} {text.strip()}")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def check_verdict(item: WordVerdict, suspects: dict[int, list[str]]) -> str | None:
+    """Why a verdict cannot be used, or None. The checks need no knowledge of the lecture."""
+    if item.ref not in suspects:
+        return f"S{item.ref} has no marked word"
+    if _norm(item.heard) not in {_norm(w) for w in suspects[item.ref]}:
+        return "the heard word is not the marked word of that line"
+    if item.decision == "keep":
+        return None
+    if _norm(item.written) == _norm(item.heard):
+        return "the written form is the heard word"
+    if len(WORD.findall(item.written)) > CORRECTION_MAX_WORDS or len(item.written) > 40:
+        return "a rewrite, not a word"
+    return None
+
+
+def _norm(text: str) -> str:
+    return "".join(WORD.findall(text)).lower()
+
+
 # --- transcripts ---------------------------------------------------------------------------------
 
 
@@ -507,7 +688,7 @@ def load_transcript(data_dir: Path, session_id: str):
             print(f"{session_id}: no transcript")
             return None, None, None
         rows = conn.execute(
-            "SELECT start_ms, end_ms, text FROM transcript_segments WHERE run_id = ?"
+            "SELECT start_ms, end_ms, text, words_json FROM transcript_segments WHERE run_id = ?"
             " AND dropped IS NULL ORDER BY start_ms, id", (run["id"],)).fetchall()
     finally:
         conn.close()
