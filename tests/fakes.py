@@ -343,3 +343,85 @@ class DictKeyStore:
     def delete_password(self, service: str, username: str) -> None:
         self._check()
         del self.data[(service, username)]
+
+
+class FakeLlm:
+    """A scripted LLM provider for the notes pipeline: no network, no model.
+
+    `responder(request, index)` returns the answer text for the request number `index` (from 0),
+    or raises an LlmError. Every request is kept in `requests`. Usage is a rough 4 characters per
+    token, so tests can check it is passed along."""
+
+    name = "fake"
+
+    def __init__(self, responder, model: str = "fake-1") -> None:
+        self.responder = responder
+        self.model = model
+        self.requests = []
+
+    def generate(self, request):
+        from studyscribe.notes.providers.base import LlmResponse, Usage
+
+        index = len(self.requests)
+        self.requests.append(request)
+        text = self.responder(request, index)
+        usage = Usage(input_tokens=(len(request.system) + len(request.user)) // 4,
+                      output_tokens=len(text) // 4)
+        return LlmResponse(text=text, usage=usage, model_version=self.model,
+                           request_id=f"req-{index}", duration_s=0.01)
+
+    def count_tokens(self, system: str, user: str) -> int:
+        return (len(system) + len(user)) // 4
+
+    def check(self) -> str:
+        return self.model
+
+    def close(self) -> None:
+        pass
+
+
+def input_refs(request) -> list[int]:
+    """The S-numbers a request offers: its transcript lines (map) or the refs in its input notes
+    (reduce), in order."""
+    import json
+    import re
+
+    user = request.user.split("\n\nYour previous answer")[0]
+    if user.startswith("["):
+        try:
+            parts = json.loads(user)
+        except ValueError:
+            parts = None
+        if isinstance(parts, list):
+            found = []
+            for part in parts:
+                for value in part["notes"].values():
+                    if isinstance(value, list):
+                        for item in value:
+                            found += [item["ref"]] if "ref" in item else list(item["refs"])
+            return sorted(set(found))
+    return [int(n) for n in re.findall(r"^S(\d+) ", user, flags=re.MULTILINE)]
+
+
+def studio_notes(refs, *, summary: str = "A summary.", code: str = "x = 1", **sections) -> str:
+    """A valid answer for the Studio template citing `refs` (first, last and the middle one)."""
+    import json
+
+    first, middle, last = refs[0], refs[len(refs) // 2], refs[-1]
+    data = {
+        "summary": summary,
+        "outline": [{"title": "Start", "ref": first}],
+        "concepts": [{"name": "Idea", "explanation": "An idea.", "refs": [first, middle]}],
+        "definitions": [{"term": "Term", "definition": "A term.", "refs": [middle]}],
+        "examples": [{"code": code, "explanation": "Sets x.", "refs": [last]}],
+        "questions": [{"question": "Why?", "answer": "Because.", "difficulty": "easy",
+                       "refs": [first]}],
+        "open_points": [],
+    }
+    data.update(sections)
+    return json.dumps(data)
+
+
+def echo_notes(request, index) -> str:
+    """Responder: valid Studio notes citing the request's own input."""
+    return studio_notes(input_refs(request))
