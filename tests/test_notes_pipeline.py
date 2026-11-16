@@ -4,12 +4,13 @@ import pytest
 
 from fakes import FakeLlm, echo_notes, input_refs, studio_notes
 
-from studyscribe.notes.blocks import cut_blocks
+from studyscribe.notes.blocks import Block, cut_blocks
 from studyscribe.notes.pipeline import (
     InvalidAnswer,
     Lecture,
     NotesError,
     PipelineOptions,
+    coverage_gap,
     generate_notes,
 )
 from studyscribe.notes.providers.base import BadRequest, ServerError, Truncated, Usage
@@ -245,3 +246,57 @@ def test_thinking_uses_the_larger_cap_and_passes_the_effort():
 def test_no_blocks():
     with pytest.raises(NotesError, match="no lines"):
         generate_notes(FakeLlm(echo_notes), STUDIO, [], [], LECTURE)
+
+
+def block_of(first, count, index=1):
+    lines = tuple(Line(n, n, (n - first) * 10_000, (n - first) * 10_000 + 9_000, f"t{n}")
+                  for n in range(first, first + count))
+    return Block(index, lines)
+
+
+def test_coverage_gap_none_when_the_last_cited_line_is_late_enough():
+    block = block_of(101, 20)  # S101-S120; 85% = 17 lines, up to S117
+    assert coverage_gap({"concepts": [{"refs": [101, 117]}]}, block) is None
+    assert coverage_gap({"outline": [{"ref": 120}]}, block) is None
+
+
+def test_coverage_gap_reports_the_uncovered_lines():
+    block = block_of(101, 20, index=3)
+    gap = coverage_gap({"summary": "s", "outline": [{"ref": 101}],
+                        "concepts": [{"refs": [104, 116]}]}, block)
+    assert (gap.block, gap.last_cited, gap.uncovered_from, gap.uncovered_to) == (3, 116, 117, 120)
+    assert gap.start_ms == 160_000 and gap.end_ms == 199_000
+    assert gap.describe() == ("block 3: the notes cite up to S116; lines S117-S120 "
+                              "(0:02:40-0:03:19) are not covered")
+    assert gap.as_dict()["uncovered"] == [117, 120]
+
+
+def test_coverage_gap_when_nothing_is_cited():
+    gap = coverage_gap({"summary": "s", "concepts": []}, block_of(1, 10))
+    assert gap.last_cited is None and (gap.uncovered_from, gap.uncovered_to) == (1, 10)
+    assert "cite up to nothing" in gap.describe()
+
+
+def test_a_map_answer_that_stops_early_gets_a_warning_not_a_drop():
+    progress = []
+
+    def responder(request, index):
+        refs = input_refs(request)
+        return studio_notes(refs[: len(refs) // 2]) if index == 0 else echo_notes(request, index)
+
+    result, _, calls, blocks = run(responder, on_progress=progress.append)
+    assert [c.status for c in calls] == ["ok", "ok", "ok"]
+    assert [w.block for w in result.coverage] == [1]
+    assert result.stats["coverage_warnings"][0]["block"] == 1
+    assert result.stats["coverage_warnings"][0]["uncovered"][1] == blocks[0].last_n
+    assert any(p.startswith("warning: block 1: the notes cite up to S") for p in progress)
+
+
+def test_map_targets_follow_the_block_duration_not_its_speech():
+    # lines of 5 s every 10 s: a block of about 12 minutes with 6 of speech; concepts are 24
+    # per hour, so 5 by duration (2 by speech)
+    lines = [Line(n, n, (n - 1) * 10_000, (n - 1) * 10_000 + 5_000, f"t{n}")
+             for n in range(1, 73)]
+    llm = FakeLlm(echo_notes)
+    generate_notes(llm, STUDIO, lines, cut_blocks(lines), LECTURE, options=options())
+    assert "About 5 items." in llm.requests[0].system.split('- "concepts": ')[1].splitlines()[0]

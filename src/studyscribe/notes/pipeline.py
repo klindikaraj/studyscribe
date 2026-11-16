@@ -15,7 +15,8 @@ For every request:
 - transient provider errors are retried by retry.py; any other provider error stops the
   generation (the work done so far is in the calls already reported).
 
-Nothing else is dropped: code items get a graded check (code_check.py) that only warns.
+Nothing else is dropped: code items get a graded check (code_check.py) and a map answer that
+stops citing before 85% of its block gets a coverage warning; both only warn.
 """
 
 from __future__ import annotations
@@ -50,11 +51,13 @@ from studyscribe.notes.schema import output_model, output_schema
 from studyscribe.notes.templates import Template
 from studyscribe.notes.transcript import Line
 from studyscribe.notes.uncertain import UncertainWord, uncertain_words
+from studyscribe.transcribe.export import clock
 
 Stage = Literal["map", "partial", "reduce"]
 DEFAULT_NUM_CTX = 32768
 MARGIN_TOKENS = 512
 PART_OVERHEAD_TOKENS = 20  # {"part":1,"from":"0:00:09","to":"0:12:41","notes":...}
+MIN_COVERAGE = 0.85  # share of a block's lines up to the last one a map answer cites
 
 
 class NotesError(Exception):
@@ -121,6 +124,44 @@ class CallRecord:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class CoverageWarning:
+    """A map answer whose last cited line comes before MIN_COVERAGE of its block: the end of
+    the block is probably missing from the notes. A warning, nothing is dropped."""
+
+    block: int
+    last_cited: int | None  # None: the answer cites nothing
+    uncovered_from: int  # first S-number after the last cited one
+    uncovered_to: int  # the block's last S-number
+    start_ms: int  # start of the first uncovered line
+    end_ms: int  # end of the block
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"block": self.block, "last_cited": self.last_cited,
+                "uncovered": [self.uncovered_from, self.uncovered_to],
+                "start_ms": self.start_ms, "end_ms": self.end_ms}
+
+    def describe(self) -> str:
+        cited = f"S{self.last_cited}" if self.last_cited is not None else "nothing"
+        return (f"block {self.block}: the notes cite up to {cited}; lines "
+                f"S{self.uncovered_from}-S{self.uncovered_to} ({clock(self.start_ms)}-"
+                f"{clock(self.end_ms)}) are not covered")
+
+
+def coverage_gap(notes: Mapping[str, Any], block: Block,
+                 min_share: float = MIN_COVERAGE) -> CoverageWarning | None:
+    """The warning for a map answer (plain notes, references already checked) whose last cited
+    line is before `min_share` of the block's lines, or None."""
+    cited = [n for n in refs_in([notes]) if block.first_n <= n <= block.last_n]
+    last = max(cited) if cited else None
+    covered = (last - block.first_n + 1) if last is not None else 0
+    if covered >= min_share * len(block.lines):
+        return None
+    first_uncovered = block.lines[covered]
+    return CoverageWarning(block.index, last, first_uncovered.n, block.last_n,
+                           first_uncovered.start_ms, block.end_ms)
+
+
 @dataclass
 class NotesResult:
     notes: dict[str, Any]  # final notes: S-numbers, code checks added
@@ -128,6 +169,7 @@ class NotesResult:
     map_answers: dict[int, str]  # block index -> accepted raw answer (for resume)
     uncertain: list[UncertainWord]
     stats: dict[str, Any] = field(default_factory=dict)
+    coverage: list[CoverageWarning] = field(default_factory=list)
 
 
 def generate_notes(provider: LlmProvider, template: Template, lines: Sequence[Line],
@@ -167,6 +209,7 @@ class _Run:
                  done_maps: dict[int, str]) -> NotesResult:
         parts: list[tuple[PartNotes, int]] = []  # (notes of a part, its speech in ms)
         map_answers: dict[int, str] = {}
+        coverage: list[CoverageWarning] = []
         resumed = 0
         for block in blocks:
             allowed = range(block.first_n, block.last_n + 1)
@@ -176,12 +219,18 @@ class _Run:
                 map_answers[block.index] = done_maps[block.index]
             else:
                 self.progress(f"map {block.index}/{len(blocks)}")
-                targets = self.template.targets(block.speech_ms, whole_lecture=False)
+                # The block's duration, not its speech: v5 with speech-based targets asked for
+                # one item less per section than v4 and lost content (2026-11-16).
+                targets = self.template.targets(block.duration_ms, whole_lecture=False)
                 prompt = map_prompt(self.template, block.lines, part=block.index,
                                     parts=len(blocks), targets=targets, title=self.lecture.title,
                                     course=self.lecture.course, language=self.lecture.language)
                 notes, raw = self._ask("map", block.index, prompt, allowed)
                 map_answers[block.index] = raw
+            gap = coverage_gap(notes.model_dump(), block)
+            if gap is not None:
+                coverage.append(gap)
+                self.progress(f"warning: {gap.describe()}")
             parts.append((PartNotes(block.start_ms, block.end_ms, notes.model_dump()),
                           block.speech_ms))
         final = self._reduce(parts)
@@ -195,9 +244,11 @@ class _Run:
             "refs": {stage: report.as_dict() for stage, report in self.reports.items()},
             "code_checks": code_levels,
             "uncertain_words": len(uncertain),
+            "coverage_warnings": [gap.as_dict() for gap in coverage],
         }
         return NotesResult(notes=annotated, resolved=resolve(annotated, by_n),
-                           map_answers=map_answers, uncertain=uncertain, stats=stats)
+                           map_answers=map_answers, uncertain=uncertain, stats=stats,
+                           coverage=coverage)
 
     def _reduce(self, parts: list[tuple[PartNotes, int]]) -> BaseModel:
         group_number = 0
