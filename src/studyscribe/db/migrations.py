@@ -100,7 +100,80 @@ V2 = [
     "CREATE INDEX idx_transcript_run_time ON transcript_segments(run_id, start_ms)",
 ]
 
-MIGRATIONS: list[list[str]] = [V1, V2]
+# Notes (step 3). Every generation is kept (each one cost time or money); the exports show the
+# latest done one. A generation is resumed when its options match: the accepted map answers are
+# read back from llm_calls (stage 'map', status 'ok'). Its template is copied into
+# template_json, because a template can change after a generation.
+V3 = [
+    "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    """
+    CREATE TABLE templates (
+      id             TEXT PRIMARY KEY,
+      title_json     TEXT NOT NULL,
+      description    TEXT,
+      template_json  TEXT NOT NULL,
+      builtin        INTEGER NOT NULL DEFAULT 0,
+      updated_at     TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE generated_notes (
+      id                INTEGER PRIMARY KEY,
+      session_id        TEXT NOT NULL REFERENCES sessions(id),
+      transcript_run_id INTEGER REFERENCES transcription_runs(id) ON DELETE SET NULL,
+      status            TEXT NOT NULL CHECK (status IN ('running', 'interrupted', 'done',
+                                                         'failed')),
+      provider          TEXT NOT NULL,
+      model             TEXT NOT NULL,
+      template_id       TEXT NOT NULL,
+      template_json     TEXT NOT NULL,
+      language          TEXT NOT NULL,
+      language_source   TEXT NOT NULL CHECK (language_source IN ('transcript', 'forced')),
+      prompt_version    TEXT NOT NULL,
+      prompt_hash       TEXT NOT NULL,
+      options_json      TEXT NOT NULL,
+      blocks_json       TEXT NOT NULL,
+      content_json      TEXT,
+      content_md        TEXT,
+      uncertain_json    TEXT,
+      stats_json        TEXT,
+      started_at        TEXT NOT NULL,
+      finished_at       TEXT,
+      error             TEXT
+    )
+    """,
+    "CREATE UNIQUE INDEX idx_notes_open ON generated_notes(session_id)"
+    " WHERE status IN ('running', 'interrupted')",
+    "CREATE INDEX idx_notes_session ON generated_notes(session_id, id)",
+    """
+    CREATE TABLE llm_calls (
+      id              INTEGER PRIMARY KEY,
+      notes_id        INTEGER NOT NULL REFERENCES generated_notes(id) ON DELETE CASCADE,
+      stage           TEXT NOT NULL CHECK (stage IN ('map', 'partial', 'reduce')),
+      block           INTEGER NOT NULL,
+      attempt         INTEGER NOT NULL,
+      status          TEXT NOT NULL CHECK (status IN ('ok', 'invalid', 'error')),
+      model_version   TEXT,
+      request_id      TEXT,
+      input_tokens    INTEGER,
+      output_tokens   INTEGER,
+      thinking_tokens INTEGER,
+      cached_tokens   INTEGER,
+      cost_usd        REAL,
+      list_cost_usd   REAL,
+      duration_s      REAL,
+      load_s          REAL,
+      prefill_s       REAL,
+      generate_s      REAL,
+      output_json     TEXT,
+      error           TEXT,
+      created_at      TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX idx_llm_calls_notes ON llm_calls(notes_id, stage, block)",
+]
+
+MIGRATIONS: list[list[str]] = [V1, V2, V3]
 
 
 class SchemaTooNewError(RuntimeError):

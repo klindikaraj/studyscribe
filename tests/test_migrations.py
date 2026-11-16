@@ -20,9 +20,10 @@ def db(tmp_path: Path):
 
 
 def test_fresh_database_reaches_latest_version(db) -> None:
-    assert schema_version(db) == len(MIGRATIONS) == 2
+    assert schema_version(db) == len(MIGRATIONS) == 3
     assert {"courses", "sessions", "audio_segments", "transcription_runs",
-            "transcript_segments"} <= tables(db)
+            "transcript_segments", "settings", "templates", "generated_notes",
+            "llm_calls"} <= tables(db)
 
 
 def test_connection_settings(db) -> None:
@@ -31,8 +32,8 @@ def test_connection_settings(db) -> None:
 
 
 def test_migrate_is_idempotent(db) -> None:
-    assert migrate(db) == 2
-    assert migrate(db) == 2
+    assert migrate(db) == 3
+    assert migrate(db) == 3
 
 
 def test_failed_migration_rolls_back_entirely(tmp_path: Path) -> None:
@@ -84,3 +85,56 @@ def test_foreign_keys_are_enforced(db) -> None:
             "INSERT INTO sessions (id, course_id, status, started_at)"
             " VALUES ('s', 42, 'recording', 'x')"
         )
+
+
+def v2_database(path: Path) -> None:
+    conn = connect(path)
+    migrate(conn, MIGRATIONS[:2])
+    conn.execute("INSERT INTO sessions (id, status, started_at) VALUES ('s1', 'recorded', 'x')")
+    conn.close()
+
+
+def test_a_database_with_an_older_schema_is_backed_up_before_migrating(tmp_path: Path) -> None:
+    path = tmp_path / "app.db"
+    v2_database(path)
+    saved = []
+    conn = open_database(path, on_backup=saved.append)
+    assert schema_version(conn) == 3
+    conn.close()
+    assert len(saved) == 1 and saved[0].parent == tmp_path / "backups"
+    assert saved[0].name.startswith("app-v2-") and saved[0].suffix == ".db"
+    backup = connect(saved[0])
+    assert schema_version(backup) == 2
+    assert backup.execute("SELECT id FROM sessions").fetchone()["id"] == "s1"
+    assert "generated_notes" not in tables(backup)
+    backup.close()
+    # already migrated: no new backup
+    open_database(path, on_backup=saved.append).close()
+    assert len(saved) == 1
+
+
+def test_a_new_database_is_not_backed_up(tmp_path: Path) -> None:
+    saved = []
+    open_database(tmp_path / "app.db", on_backup=saved.append).close()
+    assert saved == [] and not (tmp_path / "backups").exists()
+
+
+def test_notes_tables(db) -> None:
+    db.execute("INSERT INTO sessions (id, status, started_at) VALUES ('s1', 'recorded', 'x')")
+    row = ("s1", "running", "ollama", "m", "studio", "{}", "it", "transcript", "v5.1", "h", "{}",
+           "[]", "now")
+    insert = ("INSERT INTO generated_notes (session_id, status, provider, model, template_id,"
+              " template_json, language, language_source, prompt_version, prompt_hash,"
+              " options_json, blocks_json, started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    notes_id = db.execute(insert, row).lastrowid
+    with pytest.raises(sqlite3.IntegrityError):  # one open generation per session
+        db.execute(insert, row)
+    db.execute("UPDATE generated_notes SET status = 'done' WHERE id = ?", (notes_id,))
+    db.execute(insert, row)  # a new one beside the done one
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO llm_calls (notes_id, stage, block, attempt, status, created_at)"
+                   " VALUES (?, 'summary', 1, 1, 'ok', 'now')", (notes_id,))
+    db.execute("INSERT INTO llm_calls (notes_id, stage, block, attempt, status, created_at)"
+               " VALUES (?, 'map', 1, 1, 'ok', 'now')", (notes_id,))
+    db.execute("DELETE FROM generated_notes WHERE id = ?", (notes_id,))
+    assert db.execute("SELECT COUNT(*) FROM llm_calls").fetchone()[0] == 0  # cascade
