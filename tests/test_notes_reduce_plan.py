@@ -51,3 +51,25 @@ def test_groups_cover_all_consecutively_within_budget(sizes, budget):
     assert [i for g in groups for i in g] == list(range(len(sizes)))
     assert all(g for g in groups) and max(sums(sizes, groups)) <= budget
 
+
+
+def test_a_weight_limit_makes_more_groups():
+    sizes = [100] * 6
+    assert plan_groups(sizes, 300) == [[0, 1, 2], [3, 4, 5]]
+    # weights: speech; at most 20 per group, so at most two parts of 10
+    groups = plan_groups(sizes, 300, weights=[10] * 6, weight_limit=20)
+    assert groups == [[0, 1], [2, 3], [4, 5]]
+
+
+def test_a_part_heavier_than_the_weight_limit_stays_alone():
+    groups = plan_groups([100, 100, 100, 100], 250, weights=[5, 50, 5, 5], weight_limit=20)
+    assert groups == [[0], [1], [2, 3]]
+
+
+def test_weights_do_not_matter_when_everything_fits_one_request():
+    assert plan_groups([100, 100], 300, weights=[50, 50], weight_limit=20) == [[0, 1]]
+
+
+def test_weights_must_match_sizes():
+    with pytest.raises(ValueError, match="one weight per size"):
+        plan_groups([1, 2], 10, weights=[1], weight_limit=5)
