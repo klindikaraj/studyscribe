@@ -12,6 +12,8 @@ ONE = parse_template(json.dumps({
     "id": "one", "title": {"en": "One"},
     "sections": [{"key": "points", "kind": "bullets", "heading": {"en": "Points"},
                   "instructions": "Points.", "per_hour": 10, "min": 1, "max": 100}]}))
+
+
 def est(blocks_ms, *args, **kwargs):
     """The One template, blocks whose speech equals their duration."""
     return estimate_notes(ONE, blocks_ms, blocks_ms, *args, **kwargs)
@@ -22,15 +24,15 @@ PLAIN = Assumptions(chars_per_token=4.0, grouping_chars_per_token=4.0, tokens_pe
 
 
 def test_answer_tokens_follow_the_template_targets():
-    assert answer_tokens(ONE, 30 * MIN, whole_lecture=False, assumptions=PLAIN) == 500
+    assert answer_tokens(ONE, ONE.targets(30 * MIN, whole_lecture=False), PLAIN) == 500
     studio = builtin_template()
-    block = answer_tokens(studio, 13 * MIN, whole_lecture=False)
-    assert 900 < block < 1600  # measured 860-1,518 on 15-minute blocks
+    block = answer_tokens(studio, studio.targets(15 * MIN, whole_lecture=False))
+    assert 900 < block < 1800  # measured 860-1,562 on 15-minute blocks (v4-v6, 2026-11-16)
 
 
 def test_short_lecture_two_maps_and_one_reduce():
     estimate = est([12 * MIN, 6 * MIN], [20_000, 12_000], 4_000, 16_000,
-                              thinking=False, assumptions=PLAIN)
+                   thinking=False, assumptions=PLAIN)
     assert [r.stage for r in estimate.requests] == ["map", "map", "reduce"]
     assert [r.input_tokens for r in estimate.requests] == [5_000, 3_000, 1_000 + 300]
     assert [r.output_tokens for r in estimate.requests] == [200, 100, 300]
@@ -41,7 +43,7 @@ def test_long_lecture_gets_partial_reduces_sized_from_their_speech():
     # 14 blocks of 30 minutes: 500 tokens each, 7,000 in all, budget 2,000 -> 4 partials
     # (4, 4, 4 and 2 blocks), then the final reduce on their answers
     estimate = est([30 * MIN] * 14, [24_000] * 14, 4_000, 2_000,
-                              thinking=False, assumptions=PLAIN)
+                   thinking=False, assumptions=PLAIN)
     assert estimate.count("map") == 14 and estimate.count("partial") == 4
     partial = [r for r in estimate.requests if r.stage == "partial"]
     assert [r.output_tokens for r in partial] == [2000, 2000, 2000, 1000]
@@ -73,7 +75,7 @@ def test_retry_margin_time_and_cost():
     a = Assumptions(chars_per_token=4.0, tokens_per_item=100, answer_overhead_tokens=0,
                     retry_margin=0.15)
     estimate = est([12 * MIN, 6 * MIN], [20_000, 12_000], 4_000, 16_000,
-                              thinking=False, assumptions=a)
+                   thinking=False, assumptions=a)
     assert estimate.input_tokens == math.ceil(9_300 * 1.15)
     assert estimate.output_tokens == math.ceil(600 * 1.15)
     assert estimate.seconds(1000, 50) == pytest.approx(
@@ -92,3 +94,23 @@ def test_no_blocks_no_requests_and_mismatched_inputs():
     with pytest.raises(ValueError):
         estimate_notes(ONE, [MIN], [], [1_000], 4_000, 16_000, thinking=False)
 
+
+
+def test_partial_reduces_get_their_share_of_the_final_targets():
+    capped = parse_template(json.dumps({
+        "id": "capped", "title": {"en": "Capped"},
+        "sections": [{"key": "points", "kind": "bullets", "heading": {"en": "Points"},
+                      "instructions": "Points.", "per_hour": 10, "min": 1, "max": 10}]}))
+    estimate = estimate_notes(capped, [30 * MIN] * 14, [30 * MIN] * 14, [24_000] * 14, 4_000,
+                              2_000, thinking=False, assumptions=PLAIN)
+    partial = [r.output_tokens for r in estimate.requests if r.stage == "partial"]
+    # final: 10 items; a partial on 4 of the 14 blocks: 10 * 4 / 14 * 1.5 = 4 items, not the
+    # 10 its own two hours would ask for
+    assert partial == [400, 400, 400, 200]
+    assert estimate.requests[-1].output_tokens == 1_000
+    assert estimate.problem is None
+
+
+def test_a_reduce_that_cannot_work_is_reported():
+    estimate = est([300 * MIN], [24_000], 4_000, 2_000, thinking=False, assumptions=PLAIN)
+    assert estimate.problem == "one part's notes alone exceed the reduce budget"

@@ -16,12 +16,12 @@ requests have not been measured yet.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from studyscribe.notes import pricing
 from studyscribe.notes.providers.base import Usage
-from studyscribe.notes.reduce_plan import fits, plan_groups
+from studyscribe.notes.reduce_plan import ReduceTooLarge, fits, plan_groups
 from studyscribe.notes.templates import Template
 
 MAX_LEVELS = 6
@@ -51,6 +51,7 @@ class RequestEstimate:
 class Estimate:
     requests: tuple[RequestEstimate, ...]
     retry_margin: float
+    problem: str | None = None  # why the pipeline would stop before the final reduce
 
     def count(self, stage: str | None = None) -> int:
         return sum(1 for r in self.requests if stage is None or r.stage == stage)
@@ -85,11 +86,10 @@ class Estimate:
         return charged * factor, listed * factor
 
 
-def answer_tokens(template: Template, speech_ms: int, *, whole_lecture: bool,
+def answer_tokens(template: Template, targets: Mapping[str, int],
                   assumptions: Assumptions = Assumptions()) -> int:
-    """Tokens of an answer that meets the template's targets for this much speech."""
+    """Tokens of an answer that meets these targets of the template."""
     a = assumptions
-    targets = template.targets(speech_ms, whole_lecture=whole_lecture)
     tokens = a.answer_overhead_tokens
     for section in template.sections:
         per = a.tokens_per_sentence if section.kind == "summary" else a.tokens_per_item
@@ -114,35 +114,45 @@ def estimate_notes(template: Template, block_duration_ms: Sequence[int],
     requests = []
     for duration, speech, chars in zip(block_duration_ms, block_speech_ms, map_prompt_chars,
                                        strict=True):
-        answer = answer_tokens(template, duration, whole_lecture=False, assumptions=a)
+        answer = answer_tokens(template, template.targets(duration, whole_lecture=False), a)
         requests.append(RequestEstimate("map", _tokens(chars, a), answer + extra))
         parts.append((answer, speech))
     system = _tokens(reduce_system_chars, a)
     grouping = a.chars_per_token / a.grouping_chars_per_token
-    for _ in range(MAX_LEVELS):
+    total_speech = sum(block_speech_ms)
+    problem = None
+    for level in range(MAX_LEVELS + 1):
         sizes = [math.ceil(tokens * grouping) for tokens, _ in parts]
         if not sizes or fits(sizes, reduce_budget_tokens):
             break
-        groups = plan_groups(sizes, reduce_budget_tokens)
+        if level == MAX_LEVELS:
+            problem = f"the notes still do not fit one reduce after {MAX_LEVELS} levels"
+            break
+        try:
+            groups = plan_groups(sizes, reduce_budget_tokens)
+        except ReduceTooLarge:
+            problem = "one part's notes alone exceed the reduce budget"
+            break
         if all(len(g) == 1 for g in groups):
-            break  # the pipeline stops here with an error; the estimate just ends
+            problem = "the partial notes would not get shorter: the pipeline would stop"
+            break
         merged = []
         for group in groups:
             if len(group) == 1:
                 merged.append(parts[group[0]])
                 continue
             speech = sum(parts[i][1] for i in group)
-            answer = answer_tokens(template, speech, whole_lecture=False, assumptions=a)
+            answer = answer_tokens(template, template.partial_targets(speech, total_speech), a)
             requests.append(RequestEstimate("partial", system + sum(parts[i][0] for i in group),
                                             answer + extra))
             merged.append((answer, speech))
         parts = merged
     if parts:
         speech = sum(s for _, s in parts)
-        answer = answer_tokens(template, speech, whole_lecture=True, assumptions=a)
+        answer = answer_tokens(template, template.targets(speech, whole_lecture=True), a)
         requests.append(RequestEstimate("reduce", system + sum(t for t, _ in parts),
                                         answer + extra))
-    return Estimate(tuple(requests), a.retry_margin)
+    return Estimate(tuple(requests), a.retry_margin, problem)
 
 
 def _tokens(chars: int, assumptions: Assumptions) -> int:
