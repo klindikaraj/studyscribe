@@ -30,7 +30,8 @@ MAX_LEVELS = 6
 @dataclass(frozen=True)
 class Assumptions:
     chars_per_token: float = 3.7  # qwen3.5:9b on the map prompts: 3.63-3.87
-    grouping_chars_per_token: float = 2.5  # what the pipeline sizes reduce groups with
+    # The pipeline groups reduces on counted tokens (2026-11-16), so the same ratio as above.
+    grouping_chars_per_token: float = 3.7
     tokens_per_item: int = 65  # JSON included (measured 55-69)
     tokens_per_sentence: int = 35  # summary sentences (not measured separately)
     answer_overhead_tokens: int = 30  # braces, keys of empty sections
