@@ -1,7 +1,7 @@
 # Step 3 plan: study notes
 
-Agreed plan for step 3 of the roadmap (approved 2026-11-03; local provider added 2026-11-09).
-Update it when a decision changes.
+Agreed plan for step 3 of the roadmap (approved 2026-11-03; local provider added 2026-11-09;
+piece 2 revised 2026-11-16 after the correction-pass probe). Update it when a decision changes.
 
 ## Goal
 
@@ -296,9 +296,10 @@ whether two identical seeded requests give the same text.
    probe above. Unit tests with a fake HTTP server (local socket, no Ollama): error mapping,
    context guards, `/api/ps` offload check, unload in `finally`. Only after the user has
    installed Ollama and pulled the model.
-2. Pipeline: blocks, map, reduce (hierarchical when it does not fit), schema from the template,
-   validation, reference checks, identifier corrections, resume. All tests offline with a fake
-   LLM.
+2. Pipeline (revised 2026-11-16, see "Piece 2 in detail"): transcript lines, uncertain words,
+   blocks, templates, schema from the template, prompts, reference checks, code-name check,
+   reduce plan, estimate, map / reduce with validation and retries, resume from stored map
+   outputs. No database, no network: all tests offline with a fake LLM (`FakeLlm`).
 3. Database v3 and CLI: `notes`, `transcribe --notes`, estimate and confirmation, recovery,
    `template list/import`, NOTES column in `sessions`.
 4. Export: `notes.md`, `notes.html` with player and clickable timestamps, `audio.flac` when
@@ -308,8 +309,56 @@ whether two identical seeded requests give the same text.
    cloud models only
    if the user wants them later (Gemini when it answers, Claude once the account has credit,
    after asking). A checklist in
-   `docs/manual-test-notes.md`: timestamps to click, definitions to compare with the audio, the
-   "TEC" → `detach` correction (0:14:01 to 0:14:08).
+   `docs/manual-test-notes.md`: timestamps to click, definitions to compare with the audio,
+   "TEC" (S186, 0:14:08) listed in "Words to check by listening", and no invented method name
+   for it in the notes; code items with a warning checked against the audio.
+
+### Piece 2 in detail (agreed 2026-11-16)
+
+Changes from the first plan, after the correction-pass probe (see "Findings so far"):
+
+- **No automatic corrections of recognition errors in step 3** (known limit). No correction
+  pass, no `corrections` field in the schema, no glossary in the map prompt. The map prompt
+  says: keep the transcript's words; when a passage looks misrecognised, add an open point.
+- **Code form stays** (map prompt v4 without the example): code read aloud is written as code,
+  multi-word names joined, spoken punctuation as symbols.
+- **Code items are never dropped for their names.** A name written in code form often does not
+  appear literally in the transcript ("ipsilon pred" → `y_pred`), so the check only warns, in
+  two grades, and counts. Dropped is only what is certainly invalid: references that do not
+  exist or fall outside the block (and items left without one), and output that is still not
+  valid JSON for the schema after the retries.
+- **Uncertain words**: a pure module lists the words Whisper was unsure about, with no LLM and
+  no network, for an appendix "Words to check by listening" (rendered in piece 4).
+
+Modules, one commit each, in this order:
+
+1. `transcript.py`: `Line` (S-number, segment id, start/end ms, text, Whisper's words) and the
+   prompt's line format (`S<n> text`, an `[H:MM:SS]` marker every minute), moved out of the
+   probe. Lines are numbered from 1 over the kept segments, in time order.
+2. `uncertain.py`: words with probability < 0.4, at least 3 letters, said at most twice in the
+   lecture (counted on Whisper's words, punctuation removed, case ignored): word, S-number,
+   timestamp of the word, probability. Same rule as the probe; 3 words in the Italian lecture,
+   11 in the English one.
+3. `blocks.py`: blocks of 10-15 minutes cut at the longest gap between two lines whose cut
+   falls in that range; a last block under 5 minutes joins the previous one; a lecture of at
+   most 15 minutes is one block.
+4. `templates.py` + `templates/studio.json`: template model (pydantic), loading of the
+   built-ins and of a user JSON file, targets per section from the speech duration (items per
+   hour, clamped to a minimum and a maximum). The database table and `template import` stay in
+   piece 3.
+5. `schema.py`: pydantic models per section kind, the output model built from a template. Map,
+   partial reduce and final reduce use the same model; only the targets in the prompt differ.
+6. `prompts.py` + `prompts/map.md`, `prompts/reduce.md`: `PROMPT_VERSION`, a hash of the prompt
+   files, rendering of the map, partial and final prompts.
+7. `refs.py`: reference checks (inside the block for map, among the input's references for the
+   reduces), drops and counts, the 25% rule, S-numbers inside text, resolution `S<n>` →
+   segment id and `start_ms`.
+8. `code_check.py`: graded check of code names against the cited lines ±1 (see "Code form").
+9. `reduce_plan.py`: groups of consecutive outputs for the hierarchical reduce.
+10. `estimate.py`: requests, input and output tokens, time (Ollama) or cost (cloud).
+11. `pipeline.py` + `FakeLlm` in `tests/fakes.py`: map, partial and final reduces, validation
+   retries, `Truncated` handling, a record of every call for the runner, resume from stored
+   map outputs.
 
 ## Dependencies
 
@@ -342,7 +391,9 @@ src/studyscribe/notes/
   pricing.py            price table with its verification date, cost from usage (Haiku's
                         100k threshold)
   keys.py               keyring + environment variables (only module importing keyring)
-  templates.py          template model, loading, built-in sync
+  transcript.py         Line, the prompt's line format (pure)
+  uncertain.py          words Whisper was unsure about, for the appendix (pure)
+  templates.py          template model, loading, targets (built-in sync to the db: piece 3)
   templates/studio.json
   schema.py             pydantic models per section kind, output model built from a template
   prompts.py            PROMPT_VERSION, prompt rendering, hash of the prompt files
@@ -350,6 +401,7 @@ src/studyscribe/notes/
   blocks.py             block cuts in pauses (pure)
   reduce_plan.py        grouping of map outputs for the hierarchical reduce (pure)
   refs.py               reference validation and resolution (pure)
+  code_check.py         graded check of code names against the cited lines (pure)
   estimate.py           token and cost estimate (pure)
   pipeline.py           map / reduce, validation, retries (no database)
   runner.py             generate_notes: checks, lock, lifecycle, resume, usage rows (database)
@@ -373,9 +425,9 @@ Changed: `pyproject.toml`, `db/migrations.py` (V3), `db/repo.py`, `session.py` (
    requests against the per-minute and per-day limits, confirmation above the threshold (with no
    terminal and no `--yes`, nothing is sent); Ollama: estimated time, no confirmation, then the
    model is loaded and the GPU check runs before the first block.
-4. Map, sequential: one request per block with the title, course, language and the glossary of
-   corrections from earlier blocks (so identifiers stay consistent). References must fall inside
-   the block.
+4. Map, sequential: one request per block with the title, course and language. References must
+   fall inside the block. (The glossary of corrections from earlier blocks was dropped on
+   2026-11-16 with the corrections.)
 5. Reduce: on the validated map outputs only (not on the transcript). It merges duplicates,
    joins their references and sizes each section to the lecture's length. One request when the
    map outputs fit the budget, otherwise partial reduces first (see "Context window").
@@ -398,17 +450,37 @@ on every re-transcription. The code maps `S<n>` to the segment id and its `start
 - If more than 25% of a response's references are invalid, the response is discarded and asked
   again.
 - Every drop is counted, stored in `stats_json` and printed at the end.
+- Nothing else is dropped: code items with names not in the transcript only get a warning (see
+  "Code form and uncertain words").
+- `Truncated` (output cap reached): one more attempt with twice the cap if the context allows
+  it; otherwise, or if it happens again, the generation stops with the error.
 
-### Identifier corrections
+### Code form and uncertain words (revised 2026-11-16)
 
-In the notes only; the transcript stays faithful to the audio. The prompt asks to write code read
-aloud in code form and to fix a recognition error only when the context makes the word certain.
-Every fix is listed in a `corrections` field (heard, written, refs) and rendered as an appendix.
+The first plan had the map fix recognition errors and list them in a `corrections` field. The
+probes showed that `qwen3.5:9b` cannot do it reliably, in the map or in a separate pass, with
+thinking off or on (see "Findings so far"), so **automatic corrections are a known limit of
+step 3**. The transcript stays faithful to the audio and so do the notes' words.
 
-The acceptance cases ("TEC" → `detach`, "PyTorch.neuralNetwork" → `torch.nn`, "ipsilon pred" →
-`y_pred`) never appear in a prompt, as examples or otherwise: the prompts use a made-up example
-("scores dot bush" → `scores.push(newScore)`), so the test measures the model and not the
-prompt. Code items whose text contains an S-number fail validation (and are asked again).
+- Code form stays: the map writes code read aloud as code ("PyTorch.neuralNetwork" →
+  `torch.nn`, "ipsilon pred" → `y_pred`). These acceptance cases never appear in a prompt, and
+  the prompts have no example at all (the made-up example was copied into the notes).
+- Code items whose text contains an S-number fail validation and are asked again.
+- **Code-name check** (`code_check.py`), a warning only. Every name in a code item (string
+  literals and common keywords left out) is split into its words (snake_case, camelCase, dots);
+  a word of 3+ letters is *found* when a word of the cited lines ±1 contains it, is at least
+  80% similar to it, or when it is the initials of consecutive words there ("mean squared
+  error" → `MSE`); shorter words (`nn`, `y`, `lr`) are not checked. A name is found when all its
+  words are, partly found when some are, missing when none is. The item gets:
+  - `ok`: every name found (`y_pred` from "ipsilon pred", `torch.nn.Linear` from "PyTorch
+    neural network Linear");
+  - `check` ("to verify"): a name only partly found;
+  - `unsupported` ("name not in the transcript, to verify"): a name with no word found
+    (`misure_notte` for "the two tensors").
+  Both warnings keep the item, are counted in `stats_json` and rendered next to it (piece 4).
+- **Words to check by listening** (`uncertain.py`): the words Whisper was unsure about
+  (probability < 0.4, 3+ letters, at most twice in the lecture), with S-number, timestamp and
+  probability. No LLM, no claim that they are wrong: an appendix with links to the audio.
 
 ### Retries and pacing
 
@@ -462,7 +534,7 @@ CREATE TABLE generated_notes (
   blocks_json       TEXT NOT NULL,
   content_json      TEXT,            -- validated notes, references resolved (segment id + start_ms)
   content_md        TEXT,
-  stats_json        TEXT,            -- dropped references/items, corrections
+  stats_json        TEXT,            -- dropped references/items, code warnings, uncertain words
   started_at TEXT NOT NULL, finished_at TEXT, error TEXT
 );
 CREATE UNIQUE INDEX idx_notes_open ON generated_notes(session_id)
@@ -532,19 +604,17 @@ Rules
 3. Write in {language_name}. Keep technical terms as the lecturer uses them.
 4. Code: every code element the lecturer reads aloud or names goes into "code", even a single
    method, written as in a source file (spoken punctuation as symbols, multi-word names joined
-   the way the taught language does, quotes, parentheses with the arguments given).
-5. Corrections: fix a speech-recognition error only when the context makes the intended word
-   certain, and list every fix in "corrections" (heard, written, refs). Corrections from
-   earlier parts: {glossary}.
+   the way the taught language does, quotes, parentheses with the arguments given). Only names
+   in the transcript or their evident code form; never rebuild code from a description.
+5. Recognition errors: keep the transcript's words. When a passage looks misrecognised, add an
+   open point instead of guessing.
 6. Definitions: keep the lecturer's wording; remove only spoken fillers.
-Example of a made-up lecture (format only): "S901 Now we call scores dot bush with the new
-score" -> code `scores.push(newScore)`, correction "bush" -> "push".
 Sections for this part:
 {for each section: key - instructions - about {target} items}
 ```
 
-The full wording is the probe's `BLOCK_SYSTEM_V2` (`scripts/llm_probe.py`) until piece 2 moves
-it into `prompts/map.md`.
+The wording comes from the probe's prompt v4 (`BLOCK_SYSTEM_V4` in `scripts/llm_probe.py`,
+which has no example), with rule 5 replaced as above (2026-11-16).
 
 The user message holds the block's lines.
 
@@ -556,7 +626,7 @@ Rules
 1. Use only the content of the partial notes; add nothing new.
 2. Merge duplicates: keep the most complete wording, join their refs (earliest first).
 3. Copy refs exactly; never write an S-number that is not in the input.
-4. Write in {language_name}; keep code in code form and the corrections consistent.
+4. Write in {language_name}; keep code exactly as written in the partial notes.
 Sections:
 {summary: 5-8 sentences on the thread of the lecture, no refs}
 {outline: about {n} topics in order, each with the ref where it starts}
@@ -569,7 +639,7 @@ A template is `{id, title, description, sections}`; each section has `key`, `kin
 per language, `instructions` and a number of items per hour of speech (with a minimum and a
 maximum). Kinds: `summary`, `outline`, `concepts`, `definitions`, `examples`, `questions`,
 `open_points`, `bullets`. The output schema is built from the template, so a new template needs
-no code; a new kind needs its rendering. Corrections are a fixed part of the schema. "Unclear
+no code; a new kind needs its rendering. (Corrections are no longer part of the schema.) "Unclear
 points" are points the lecturer leaves unexplained or defers, and passages where the transcript
 looks wrong. Question difficulty is `easy|medium|hard`, translated when rendered.
 
@@ -624,8 +694,13 @@ about 15% more tokens than assumed. Ollama (`qwen3.5:9b`, thinking off, hierarch
   may be blocked. If it happens: one retry asking for a paraphrase, and a warning.
 - References that exist but point to the wrong place: validation cannot see them. The
   "inside the block" rule limits them; clicking them in the acceptance test checks the rest.
-- Over-eager identifier corrections: mitigated by the "only when certain" rule and by the
-  corrections appendix, each with its reference.
+- Recognition errors stay in the notes (known limit since 2026-11-16): "TEC" is not turned into
+  `detach`. The uncertain-words appendix points the reader to them; it misses confident errors
+  ("PyTorch.neuralNetwork" has probability 0.82-0.87).
+- Code-name check: tuned on a handful of probe outputs. An invented name close to a spoken word
+  (`inputi` for "input") passes as `ok`; a right code form whose words were not said (an alias
+  shown only on screen) gets a warning. It never drops anything, so a wrong grade costs a
+  warning, not content.
 - "Faithful to the lecturer": an LLM tends to paraphrase. Not checkable automatically; checked by
   listening.
 - FLAC seeking in a page opened from disk (Edge, Chrome): tested in piece 4 (seek table, accuracy).
