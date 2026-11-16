@@ -16,6 +16,7 @@ that wrote the segment.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from studyscribe.db import repo
 from studyscribe.db.connection import transaction
 from studyscribe.session import (
     CAPTURE_LOCK_BYTE,
+    NOTES_LOCK_BYTE,
     OWNER_LOCK_BYTE,
     TRANSCRIBE_LOCK_BYTE,
     session_lock,
@@ -215,6 +217,40 @@ def recover_transcriptions(conn: sqlite3.Connection, data_dir: Path) -> list[Rec
                                     run["error"] or "the transcribing process stopped")
             results.append(RecoveredRun(run["id"], run["session_id"], run["done_ms"],
                                         run["audio_ms"]))
+        finally:
+            lock.release()
+    return results
+
+
+@dataclass
+class RecoveredNotes:
+    notes_id: int
+    session_id: str
+    maps_done: int  # accepted map blocks, kept for the resume
+    blocks: int
+
+
+def recover_notes(conn: sqlite3.Connection, data_dir: Path) -> list[RecoveredNotes]:
+    """Mark as 'interrupted' the 'running' notes generations whose process is gone (their
+    session's notes lock is free). Every call already made stays stored, so the same command
+    resumes the generation from the accepted map blocks."""
+    results = []
+    for notes in repo.list_notes_by_status(conn, "running"):
+        lock = session_lock(data_dir, notes["session_id"], NOTES_LOCK_BYTE)
+        try:
+            free = lock.acquire()
+        except OSError:  # no session folder: nobody can be generating its notes
+            free = True
+        try:
+            if not free:
+                continue  # still being generated
+            with transaction(conn):
+                repo.set_notes_status(conn, notes["id"], "interrupted",
+                                      notes["error"] or "the notes process stopped")
+            results.append(RecoveredNotes(
+                notes["id"], notes["session_id"],
+                len(repo.accepted_map_answers(conn, notes["id"])),
+                len(json.loads(notes["blocks_json"] or "[]"))))
         finally:
             lock.release()
     return results
