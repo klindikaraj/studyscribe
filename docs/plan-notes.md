@@ -1061,3 +1061,76 @@ Estimates (point 4 of the request):
   12,000 tokens and each partial reduce about 9,300, above the 8,192 output cap. `Truncated`
   would ask again with 16,384, which does not fit the 32k context with a 19k-token input, so the
   generation would stop. To be decided before piece 3 (see the recommendation).
+
+### Map prompts v5.1 and v6, two runs each (Claude, 2026-11-16)
+
+Agreed with the user after the v4/v5 probe: v5.1 = v5 with (1) "about N" for every section but
+the open points, (2) Studio's code instruction without "worked examples", (3) v4's code rule
+in bullets, (4) a coverage rule, (5) map targets from the block's duration, (6) an explicit
+no-fix rule, (7) a rule against prose as code; Studio's whole-lecture maxima lowered (15
+topics, 20 concepts, 12 definitions, 20 code items, 10 questions, 6 open points); a coverage
+warning in the pipeline (last cited line before 85% of the block). v5.1 failed the agreed
+criteria, so v6 was written as agreed: v4's wording and layout (numbered rules, targets inside
+rule 4, no list of sections) with the Studio schema and rules 6 and 7. Same lines and model as
+before, effort none, seeds 1 and 2 (with one seed the answer repeats exactly); v4 with seed 2
+added as a baseline for the variance (its seed-1 run is the one in the previous section).
+
+| | v5.1 s1 | v5.1 s2 | v6 s1 | v6 s2 | v4 s2 |
+|---|---|---|---|---|---|
+| **en** time / output tokens | 28.6 s / 1,174 | 27.2 s / 1,106 | 22.5 s / 899 | 32.3 s / 1,344 | 36.8 s / 1,562 |
+| en tokens/s | 44.9 | 44.8 | 44.8 | 45.1 | 45.1 |
+| en summary / outline / concepts / definitions / code / questions / open | 2/3/4/3/7/1/0 | 1/3/4/3/6/1/1 | 2/4/3/2/6/0/0 | 1/4/6/2/8/0/2 | —/4/6/0/16/—/0 |
+| en code ok / check / unsupported; prose | 5/2/0; **3 prose** | 5/1/0 | 6/0/0; **3 prose** | **8/0/0** | 16/0/0 |
+| en Mad Libs (S301-S327) covered | yes (topic at S275) | yes | yes | yes | yes |
+| **it** time / output tokens | 33.4 s / 1,319 | 37.5 s / 1,494 | 28.7 s / 1,120 | 31.9 s / 1,267 | 33.8 s / 1,361 |
+| it tokens/s | 44.4 | 44.3 | 44.6 | 44.7 | 44.7 |
+| it summary / outline / concepts / definitions / code / questions / open | 3/3/5/3/3/2/1 | 3/3/5/3/5/2/1 | 3/3/3/3/3/2/2 | 3/4/4/3/3/2/2 | —/4/4/4/5/—/3 |
+| it code ok / check / unsupported | 0/2/**1** | 1/3/**1** | 1/1/**1** | 1/0/**2** | 3/1/**1** |
+| it `torch.nn.Linear` (S88) | no | no | no | no | **yes** |
+| it word corrections | none: TEC in open points | none: TEC in open points | none (TEC not mentioned) | **`y_pred.detach()`** | **TEC → detach** (+ `torch.Tensor.mean` invented) |
+| Coverage warning | no / no | no / no | no / **it: cites up to S181 of S241** | no / no | no / no |
+| JSON valid at the first attempt, refs outside the block | all yes, 0 | | | | |
+
+Against the criteria:
+- en: Mad Libs covered in every run; at least 2 faithful definitions in every v5.1 and v6 run
+  (S275 "strings are immutable, meaning they cannot be altered once created..." quoted
+  word for word; S266); all code `ok` and in code form only in v6 s2. v5.1 s1 and v6 s1 write
+  code as spoken words (`'my string plus equals some adjective'`, `'word blanks noun adjective
+  verb adverb'`); v5.1 s2 shortens names (`first[0]`, `last.length - 1`). v6 writes no
+  questions in English (0 in both runs).
+- it: no v5.1 or v6 run passes. `torch.nn.Linear` is missing from all four; every run has
+  `Linear(in_features=1, out_features=1)` (S98-S101 say only "quanti input... Solo 1"), and
+  v5.1 rebuilds more (`modelo.addestramento(epochs=1000, learning_rate=0.01)`, `nn.MSELoss()`,
+  `torch.optim.Adam(model.parameters(), lr=0.01)`). The no-fix rule works in v5.1 (TEC goes
+  to the open points, quoted, in both runs) but v6 s2 writes `y_pred.detach()`. v5.1's
+  concepts and definitions match v5 (the seed, the mean squared error, the learning rate);
+  v6 has fewer (no seed; the learning rate only in a question).
+- Coverage: one warning in ten runs (v6 s1, Italian).
+
+Readings (hypotheses, not tested one by one):
+- `torch.nn.Linear` and "no corrections" pull in opposite directions. S88 is "Da
+  PyTorch.neuralNetwork peschiamo la classe Linear": writing `torch.nn` replaces
+  "neuralNetwork" with "nn", which is a fix from library knowledge. v4 finds it (2 runs of 2)
+  because its code rule allows "a misheard word fixed and listed in corrections"; the same
+  permission gives TEC → "tensor" and TEC → `detach`. With the no-fix rule the model keeps the
+  heard words.
+- `Linear(in_features=1, out_features=1)` appears in all 5 runs with the Studio schema (v5,
+  v5.1, v6) and in none of the 2 v4 runs: the schema's code section (named `examples`, with
+  Studio's description) may push towards complete example code.
+- Generation was 44-45 tokens/s in these runs against 51-52 in the earlier runs of the same
+  day; the cause was not investigated.
+
+Reduce sizes after the new maxima (3 h lecture, estimate at the measured 65 tokens per item):
+- First recomputation: the partial reduces, capped only by the same maxima as the final one,
+  would each write about 5.7k tokens, and two of them (about 8.4k conservative tokens each)
+  do not fit the final reduce's 16k budget: the pipeline would have stopped with "the partial
+  notes do not get shorter". The previous estimate hid this (it left the loop and added the
+  final reduce anyway); it now reports it (`Estimate.problem`).
+- Fixed as part of the agreed "partial targets limited": a partial reduce asks for its share
+  of the final targets times 1.5 (`Template.partial_targets`), never more than its own part's
+  targets.
+- Now: 15 maps, 2 partial reduces of about 4.6k and 4.0k output tokens, final reduce about
+  5.7k output tokens on about 10.3k of input; all under the 8,192 cap. About 14 minutes at
+  50 tokens/s, 15 at 45. With 55 tokens per item: 3.9k / 3.4k / 4.9k. With a pessimistic 85
+  tokens per item the final would be 7.4k and the partials would no longer fit one final
+  reduce (the pipeline would stop). Reduce requests are still not measured.
