@@ -27,7 +27,7 @@ Agreed with the user on 2026-11-03; 1, 5, 6 and 9 changed on 2026-11-09 (local p
      quota, the transcript never leaves the PC. Details in "Local provider (Ollama)".
    - Google Gemini (optional). The free tier failed every generation in piece 1 (503/504), so it
      is no longer the default; requests are still paced and retried with backoff.
-   - Anthropic Claude (optional): Haiku 5.5 and Sonnet 5.5, once the account has credit.
+   - Anthropic Claude (optional): Haiku 5.5 and Sonnet 5.5 (paid plan, not activated yet).
    Default: ollama / `qwen3.5:9b`, thinking off (confirmed by the user on 2026-11-09).
    `gemma4:12b-it-qat` is pulled only later, for the comparison in the acceptance test. An
    OpenAI-compatible backend (OpenRouter, FreeLLMAPI) is possible later; it is not part of step 3.
@@ -104,9 +104,9 @@ with this date and must be checked again before they are trusted.
 | `gemini-3.5-flash-lite` (stable) | yes | $0.30 / $2.50 |
 
 - Free tier: content is used to improve Google products (not on the paid tier).
-- Free-tier limits are not published in the docs, only in AI Studio for the project. The user's
-  project shows for `gemini-3.8-flash`: 5 RPM, 250,000 TPM, 20 requests per day. Limits apply
-  per project, not per key; the daily count resets at midnight Pacific time (09:00 in Italy).
+- Free-tier limits are not published in the docs, only in AI Studio for each project; they are
+  low (a few requests per minute, tens per day). Limits apply per project, not per key; the
+  daily count resets at midnight Pacific time (09:00 in Italy).
 - SDK `google-genai` 2.34.0 (2026-10-29), Python >=3.11. Structured output through
   `response_mime_type="application/json"` plus a JSON schema; supports `minItems`/`maxItems`,
   strips `minLength`/`maxLength`. The docs' examples now use a new `client.interactions` API;
@@ -315,8 +315,8 @@ whether two identical seeded requests give the same text.
 5. Acceptance: notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
    off and on) and `gemma4:12b-it-qat` (quality, time, VRAM from `llm_calls` and the probe);
    cloud models only
-   if the user wants them later (Gemini when it answers, Claude once the account has credit,
-   after asking). A checklist in
+   if the user wants them later (after asking; see "Cloud providers set aside" in the
+   findings). A checklist in
    `docs/manual-test-notes.md` (written in piece 5; it does not exist yet): timestamps to
    click, definitions to compare with the audio, "TEC" (S186, 0:14:08) listed in "Words to
    check by listening" and kept as "TEC" or put in the unclear points, never replaced by a
@@ -688,8 +688,8 @@ about 15% more tokens than assumed. Ollama (`qwen3.5:9b`, thinking off, hierarch
 - Sonnet on the 3 h lecture is above the $0.50 threshold and asks for confirmation.
 - The full acceptance test (Haiku and Sonnet on both lectures) costs about $1.40; it runs only
   after the user confirms.
-- On the free tier the 3 h lecture takes about 15 requests out of 20 per day: the A/B test with
-  Gemini may span two days.
+- On the free tier the 3 h lecture takes about 15 requests, a large share of a day's quota:
+  an A/B test with Gemini may span two days.
 
 ## Tests
 
@@ -703,7 +703,7 @@ about 15% more tokens than assumed. Ollama (`qwen3.5:9b`, thinking off, hierarch
 
 ## Risks and unverified assumptions
 
-- Gemini free tier: 20 requests per day; content used by Google (accepted for public test videos;
+- Gemini free tier: low daily quota; content used by Google (accepted for public test videos;
   a notice is printed).
 - `generate_content` versus the new `interactions` API in google-genai 2.x: checked in piece 1.
 - RECITATION blocks on Gemini: the test lecture is public, and definitions quoted almost verbatim
@@ -760,7 +760,9 @@ Installed: anthropic 2.4.0, google-genai 2.34.0, keyring 25.7.0, pydantic 2.14.2
   demand"), 2026-11-06 `504 DEADLINE_EXCEEDED`. `generate_content` reaches the model (the errors
   are server-side, not "unknown method"), but no successful structured response has been seen
   yet. **The free tier is not reliable enough to be the default.**
-- Anthropic: key stored, but the account has no credit, so no request was sent.
+- Anthropic: no generation request sent (paid plan not activated).
+
+Cloud providers set aside: free tier unreliable (repeated 503/504), paid plans not activated.
 
 Decision (2026-11-09): the main provider becomes a local LLM served by Ollama on the RTX 3060.
 Free, no quota, and the transcript never leaves the PC (fine for paid courses too). Gemini and
