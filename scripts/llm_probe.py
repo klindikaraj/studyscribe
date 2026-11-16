@@ -21,10 +21,13 @@ every minute), counted by the provider (free). --count-only skips the generation
 Ollama, in addition: Ollama's version and the model's details; GPU memory (nvidia-smi) before
 loading, after loading and after unloading; what Ollama allocated (`/api/ps`: size, size in
 GPU memory, context); load time, prefill and generation speed; the tiny request sent twice to
-see whether the fixed seed gives the same answer; with --session, a map-like request on one
-block of the first session (draft prompt and schema of the notes pipeline), its references
-checked against the block, and the answer saved to a JSON file; at the end the model is
-unloaded and Ollama's log is searched for ignored options or truncated prompts.
+see whether the fixed seed gives the same answer; with --session, a map request on one block
+of the first session (--prompt v1-v4: the drafts in this file; v5: the pipeline's own prompt,
+schema and targets for the Studio template), with the same measures for every prompt (items
+per section, references outside the block, code items per level of the pipeline's code
+check), and the answer saved to %TEMP%\\studyscribe-probe\\ in a file named after the
+session, prompt, model and effort; at the end the model is unloaded and Ollama's log is
+searched for ignored options or truncated prompts.
 
 The database is opened read-only. Only text is sent (to this PC, for Ollama), never audio.
 """
@@ -39,7 +42,6 @@ import sqlite3
 import sys
 import tempfile
 from collections import Counter
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 
@@ -47,6 +49,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from studyscribe.config import db_path
 from studyscribe.notes import gpu, keys, pricing
+from studyscribe.notes.blocks import cut_blocks
+from studyscribe.notes.code_check import check_code, cited_texts, vocabulary
+from studyscribe.notes.prompts import map_prompt
 from studyscribe.notes.providers import DEFAULT_MODELS, DEFAULT_PROVIDER, make_provider
 from studyscribe.notes.providers.base import EFFORTS, PROVIDERS, LlmError, LlmRequest
 from studyscribe.notes.providers.ollama import (
@@ -56,6 +61,9 @@ from studyscribe.notes.providers.ollama import (
     is_local,
 )
 from studyscribe.notes.providers.retry import call_with_retry
+from studyscribe.notes.schema import output_model
+from studyscribe.notes.templates import builtin_template
+from studyscribe.notes.transcript import format_lines, make_lines, speech_ms
 from studyscribe.transcribe.export import clock
 
 PROBE_SYSTEM = (
@@ -70,14 +78,10 @@ PROBE_TEXT = (
 BLOCK_OUTPUT_TOKENS = 6144
 OLLAMA_LOG = Path(os.environ.get("LOCALAPPDATA", "")) / "Ollama" / "server.log"
 S_NUMBER = re.compile(r"\bS\d+\b")
-IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 STRING_LITERAL = re.compile(r"\"[^\"]*\"|'[^']*'|`[^`]*`")
 PROSE = re.compile(r"[A-Za-z']+(?:\s+[A-Za-z']+){4,}")  # five plain words in a row
-CODE_KEYWORDS = {
-    "var", "let", "const", "function", "return", "if", "else", "for", "while", "new", "import",
-    "from", "as", "def", "class", "self", "this", "true", "false", "null", "undefined", "none",
-    "in", "of", "and", "or", "not", "print", "console", "log", "len", "range",
-}
+PROBE_DIR = Path(tempfile.gettempdir()) / "studyscribe-probe"
+_SENTENCE = re.compile(r"[^.!?]+[.!?]")
 LOG_MARKERS = ("invalid option", "truncating input", "out of memory")
 
 
@@ -261,6 +265,7 @@ BLOCK_SYSTEM_V4 = (BLOCK_SYSTEM_V3[:BLOCK_SYSTEM_V3.index(_EXAMPLE_START)]
 
 PROMPTS = {"v1": BLOCK_SYSTEM, "v2": BLOCK_SYSTEM_V2, "v3": BLOCK_SYSTEM_V3,
            "v4": BLOCK_SYSTEM_V4}
+V5 = "v5"  # no string here: the pipeline's own map prompt (studyscribe.notes.prompts)
 
 
 # --- draft correction pass (2026-11-16) ----------------------------------------------------------
@@ -335,7 +340,7 @@ def main() -> int:
     parser.add_argument("--block-from", default="0:30:00", metavar="H:MM:SS",
                         help="ollama only: start of the block of the first session")
     parser.add_argument("--block-minutes", type=float, default=15.0)
-    parser.add_argument("--prompt", choices=sorted(PROMPTS), default="v2",
+    parser.add_argument("--prompt", choices=[*sorted(PROMPTS), V5], default=V5,
                         help="ollama only: draft map prompt of the block test")
     parser.add_argument("--expect", action="append", default=[], metavar="WORD",
                         help="ollama only: report where WORD appears in the block's notes")
@@ -460,26 +465,40 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
     rows, language, title = load_transcript(args.data_dir, session_id)
     if rows is None:
         return
+    lines = make_lines(rows)
+    by_n = {line.n: line for line in lines}
     start_ms = _parse_clock(args.block_from)
     end_ms = start_ms + int(args.block_minutes * 60_000)
-    numbered = [(n, row) for n, row in enumerate(rows, start=1)
-                if start_ms <= row["start_ms"] < end_ms]
-    if not numbered:
+    block = [line for line in lines if start_ms <= line.start_ms < end_ms]
+    if not block:
         print(f"\nBlock {clock(start_ms)}-{clock(end_ms)}: no segments there")
         return
-    first, last = numbered[0][0], numbered[-1][0]
+    first, last = block[0].n, block[-1].n
     cap = _output_cap(provider, args.effort, BLOCK_OUTPUT_TOKENS)
-    user = transcript_lines([row for _, row in numbered], first_n=first)
-    system = PROMPTS[args.prompt].format(
-        title=title, start=clock(start_ms), end=clock(end_ms), first=f"S{first}", last=f"S{last}",
-        language=LANGUAGE_NAMES.get(language or "", language or "the transcript's language"),
-        schema=json.dumps(BlockNotes.model_json_schema(), separators=(",", ":")),
-        **{key: max(1, round(rate * args.block_minutes / 60))
-           for key, rate in TARGETS_PER_HOUR.items()})
+    if args.prompt == V5:
+        # The pipeline's own prompt, schema and targets (piece 2), on the same lines as v1-v4.
+        template = builtin_template()
+        blocks = cut_blocks(lines)
+        part = next((b.index for b in blocks if b.start_ms <= block[0].start_ms <= b.end_ms), 1)
+        prompt = map_prompt(template, block, part=part, parts=len(blocks),
+                            targets=template.targets(speech_ms(block), whole_lecture=False),
+                            title=title, course=None, language=language or "en")
+        system, user = prompt.system, prompt.user
+        model, code_key = output_model(template), "examples"
+    else:
+        user = format_lines(block)
+        system = PROMPTS[args.prompt].format(
+            title=title, start=clock(start_ms), end=clock(end_ms), first=f"S{first}",
+            last=f"S{last}",
+            language=LANGUAGE_NAMES.get(language or "", language or "the transcript's language"),
+            schema=json.dumps(BlockNotes.model_json_schema(), separators=(",", ":")),
+            **{key: max(1, round(rate * args.block_minutes / 60))
+               for key, rate in TARGETS_PER_HOUR.items()})
+        model, code_key = BlockNotes, "code"
     print(f"\nBlock {clock(start_ms)}-{clock(end_ms)} of {session_id}: segments S{first}-S{last}, "
           f"{len(system) + len(user):,} characters of prompt (prompt {args.prompt}), "
           f"output cap {cap:,} tokens")
-    request = LlmRequest(system=system, user=user, schema=BlockNotes.model_json_schema(),
+    request = LlmRequest(system=system, user=user, schema=model.model_json_schema(),
                          max_output_tokens=cap, effort=args.effort)
     response = call_with_retry(
         lambda: provider.generate(request),
@@ -488,64 +507,85 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
     _end_progress()
     usage = response.usage
     chars = len(system) + len(user)
+    rate = response.timings.generate_rate(usage.output_tokens) if response.timings else None
     print(f"Answer in {response.duration_s:.1f} s: input {usage.input_tokens:,} tokens "
           f"({chars / usage.input_tokens:.2f} chars/token), output {usage.output_tokens:,} tokens"
-          f" (thinking {usage.thinking_tokens})")
+          f" (thinking {usage.thinking_tokens})" + (f", {rate:.1f} tokens/s" if rate else ""))
     _print_timings(response)
-    out = Path(tempfile.gettempdir()) / (
-        f"studyscribe-probe-block-{session_id}-{args.prompt}-{args.effort}.json")
+    out = _probe_file("block", session_id, args)
     out.write_text(response.text, encoding="utf-8")
     try:
-        notes = BlockNotes.model_validate_json(response.text)
+        notes = model.model_validate_json(response.text)
     except ValidationError as exc:
-        print(f"INVALID JSON ({exc.error_count()} errors), saved to {out}")
+        print(f"Valid JSON at the first attempt: NO ({exc.error_count()} errors), saved to {out}")
+        for error in exc.errors()[:5]:
+            print(f"  {'.'.join(str(p) for p in error['loc'])}: {error['msg']}")
         return
-    refs = [r for t in notes.topics for r in [t.ref]]
-    for items in (notes.concepts, notes.definitions, notes.code, notes.open_points,
-                  notes.corrections):
-        refs += [r for item in items for r in item.refs]
-    outside = [r for r in refs if not first <= r <= last]
-    print(f"Valid JSON, saved to {out}")
-    print(f"  {len(notes.topics)} topics, {len(notes.concepts)} concepts, "
-          f"{len(notes.definitions)} definitions, {len(notes.code)} code examples, "
-          f"{len(notes.open_points)} open points, {len(notes.corrections)} corrections")
-    print(f"  references: {len(refs)}, outside the block: {len(outside)}"
-          + (f" {sorted(set(outside))[:10]}" if outside else ""))
-    for topic in notes.topics:
-        at = clock(rows[topic.ref - 1]["start_ms"]) if 1 <= topic.ref <= len(rows) else "?"
-        print(f"  [{at}] S{topic.ref} {topic.title}")
-    for fix in notes.corrections:
-        cited = " ".join(rows[n - 1]["text"] for r in fix.refs for n in (r - 1, r, r + 1)
-                         if 1 <= n <= len(rows)).lower()
-        heard = fix.heard.lower().strip()
-        verdict = ("" if heard and heard in cited
-                   else "  <- INVALID: the heard text is not in the cited lines (+-1)")
-        if not verdict and fix.written.lower().strip() in cited:
-            verdict = "  <- INVALID: the written form is already in the transcript"
-        print(f"  correction: {fix.heard!r} -> {fix.written!r} {fix.refs}{verdict}")
-    fixed = {w.lower() for fix in notes.corrections for w in IDENTIFIER.findall(fix.written)}
-    flagged = 0
-    for example in notes.code:
-        cited = [rows[n - 1]["text"] for r in example.refs for n in (r - 1, r, r + 1)
-                 if 1 <= n <= len(rows)]
-        missing = unsupported_names(example.code, cited, fixed)
-        prose = PROSE.search(STRING_LITERAL.sub("", example.code))
-        flagged += bool(missing or prose)
-        print(f"  code: {example.code!r} {example.refs}"
-              + (f"  <- not in the cited lines: {', '.join(missing)}" if missing else "")
-              + ("  <- prose, not code" if prose else ""))
-    print(f"  code items flagged (names not in the cited lines +-1, or prose): {flagged} of "
-          f"{len(notes.code)}")
-    with_s = [c.code for c in notes.code if S_NUMBER.search(c.code)]
+    print(f"Valid JSON at the first attempt: yes, saved to {out}")
+    report_block(notes.model_dump(), first, last, by_n, code_key, args, response.text)
+
+
+def report_block(data: dict, first: int, last: int, by_n: dict, code_key: str,
+                 args: argparse.Namespace, text: str) -> None:
+    """The same measures for every prompt: items per section, references outside the block and
+    the items they would drop, code items per level of the pipeline's code check."""
+    counts = {key: len(value) if isinstance(value, list) else len(_SENTENCE.findall(value))
+              for key, value in data.items()}
+    print("  items: " + ", ".join(f"{key} {n}" for key, n in counts.items())
+          + "  (summary: sentences)")
+    refs = outside = 0
+    dropped: dict[str, int] = {}
+    for key, value in data.items():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            item_refs = [item["ref"]] if "ref" in item else list(item.get("refs", []))
+            bad = [r for r in item_refs if not first <= r <= last]
+            refs += len(item_refs)
+            outside += len(bad)
+            if len(bad) == len(item_refs):
+                dropped[key] = dropped.get(key, 0) + 1
+    print(f"  references: {refs}, outside the block: {outside}; items the pipeline would drop: "
+          + (", ".join(f"{k} {n}" for k, n in dropped.items()) if dropped else "none"))
+    for topic in data.get("topics", data.get("outline", [])):
+        at = clock(by_n[topic["ref"]].start_ms) if topic["ref"] in by_n else "?"
+        print(f"  [{at}] S{topic['ref']} {topic['title']}")
+    vocab = vocabulary(line.text for line in by_n.values())
+    levels: Counter[str] = Counter()
+    prose_items = 0
+    for item in data.get(code_key, []):
+        if not item["code"].strip():
+            print(f"  example without code: {item['explanation'][:70]!r} {item['refs']}")
+            continue
+        result = check_code(item["code"], cited_texts(item["refs"], by_n), vocab)
+        levels[result.level] += 1
+        prose = bool(PROSE.search(STRING_LITERAL.sub("", item["code"])))
+        prose_items += prose
+        flags = [f"missing {', '.join(result.missing)}" if result.missing else "",
+                 f"partial {', '.join(result.partial)}" if result.partial else "",
+                 "PROSE" if prose else ""]
+        print(f"  code {result.level:11} {item['code']!r} {item['refs']}  "
+              + "  ".join(f for f in flags if f))
+    print(f"  code items: ok {levels['ok']}, check {levels['check']}, "
+          f"unsupported {levels['unsupported']}; prose written as code: {prose_items}")
+    with_s = [c["code"] for c in data.get(code_key, []) if S_NUMBER.search(c["code"])]
     print(f"  code with an S-number inside: {len(with_s)}" + (f" {with_s[:5]}" if with_s else ""))
+    for fix in data.get("corrections", []):
+        print(f"  correction: {fix['heard']!r} -> {fix['written']!r} {fix['refs']}")
     if args.prompt != "v1":
-        copied = [t for t in EXAMPLE_TEXTS if t in response.text]
+        copied = [t for t in EXAMPLE_TEXTS if t in text]
         print(f"  copied from the prompt's example: {copied if copied else 'nothing'}")
-    data = notes.model_dump()
     for word in args.expect:
         where = sorted({section for section, items in data.items()
                         if word.lower() in json.dumps(items, ensure_ascii=False).lower()})
         print(f"  {word!r}: " + (f"in {', '.join(where)}" if where else "NOT FOUND"))
+
+
+def _probe_file(kind: str, session_id: str, args: argparse.Namespace) -> Path:
+    """One file per session, prompt, model and effort, so runs never overwrite each other."""
+    PROBE_DIR.mkdir(exist_ok=True)
+    model = re.sub(r"[^\w.-]", "-", args.model)
+    return PROBE_DIR / f"{kind}-{session_id}-{args.prompt}-{model}-{args.effort}.json"
 
 
 def correction_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: str) -> None:
@@ -579,8 +619,7 @@ def correction_probe(provider: OllamaProvider, args: argparse.Namespace, session
     print(f"Answer in {response.duration_s:.1f} s: input {usage.input_tokens:,} tokens, output "
           f"{usage.output_tokens:,} tokens (thinking {usage.thinking_tokens})")
     _print_timings(response)
-    out = Path(tempfile.gettempdir()) / (
-        f"studyscribe-probe-corrections-{session_id}-{args.effort}.json")
+    out = _probe_file("corrections", session_id, args)
     out.write_text(response.text, encoding="utf-8")
     try:
         answer = CorrectionPass.model_validate_json(response.text)
@@ -688,7 +727,8 @@ def load_transcript(data_dir: Path, session_id: str):
             print(f"{session_id}: no transcript")
             return None, None, None
         rows = conn.execute(
-            "SELECT start_ms, end_ms, text, words_json FROM transcript_segments WHERE run_id = ?"
+            "SELECT id, start_ms, end_ms, text, words_json FROM transcript_segments"
+            " WHERE run_id = ?"
             " AND dropped IS NULL ORDER BY start_ms, id", (run["id"],)).fetchall()
     finally:
         conn.close()
@@ -700,23 +740,11 @@ def count_session(provider, data_dir: Path, session_id: str) -> None:
     rows, language, _ = load_transcript(data_dir, session_id)
     if rows is None:
         return
-    text = transcript_lines(rows)
+    text = format_lines(make_lines(rows))
     tokens = provider.count_tokens(PROBE_SYSTEM, text)
     _end_progress()
     print(f"{session_id} ({language}): {len(rows)} segments, {len(text):,} characters, "
           f"{tokens:,} input tokens with {provider.model} ({len(text) / tokens:.2f} chars/token)")
-
-
-def transcript_lines(rows, first_n: int = 1) -> str:
-    """The pipeline's input format (piece 2 will own it): S<n> text, a marker every minute."""
-    lines = []
-    next_marker = 0
-    for n, row in enumerate(rows, start=first_n):
-        if row["start_ms"] >= next_marker:
-            lines.append(f"[{clock(row['start_ms'])}]")
-            next_marker = (row["start_ms"] // 60_000 + 1) * 60_000
-        lines.append(f"S{n} {row['text'].strip()}")
-    return "\n".join(lines)
 
 
 # --- output helpers ------------------------------------------------------------------------------
@@ -768,28 +796,6 @@ def _print_log_warnings(start: int | None) -> None:
           + ("no ignored options or truncations" if not hits else f"{len(hits)} warnings:"))
     for line in hits[:20]:
         print(f"  {line[:200]}")
-
-
-def unsupported_names(code: str, cited: list[str], fixed: set[str]) -> list[str]:
-    """Names in a code item that no word of the cited transcript lines resembles: each name is
-    split into its words (snake_case, camelCase); a word of 3+ letters is supported when a
-    transcript word contains it or is at least 80% similar to it, or when it is the written
-    form of a listed correction. Keywords and string literals are not checked."""
-    words = {w.lower() for line in cited for w in re.findall(r"\w+", line)}
-    missing = []
-    for name in IDENTIFIER.findall(STRING_LITERAL.sub("", code)):
-        if name.lower() in CODE_KEYWORDS or name.lower() in fixed:
-            continue
-        parts = [p.lower() for p in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+",
-                                                name.replace("_", " "))]
-        for part in parts:
-            if len(part) < 3 or part.isdigit() or part in fixed:
-                continue
-            if not any(part in w or SequenceMatcher(None, part, w).ratio() >= 0.8
-                       for w in words):
-                missing.append(name)
-                break
-    return list(dict.fromkeys(missing))
 
 
 def _output_cap(provider, effort: str, cap: int) -> int:
