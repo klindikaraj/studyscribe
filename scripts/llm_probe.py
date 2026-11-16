@@ -35,6 +35,7 @@ The database is opened read-only. Only text is sent (to this PC, for Ollama), ne
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -49,9 +50,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from studyscribe.config import db_path
 from studyscribe.notes import gpu, keys, pricing
-from studyscribe.notes.blocks import cut_blocks
+from studyscribe.notes.blocks import Block, cut_blocks
 from studyscribe.notes.code_check import check_code, cited_texts, vocabulary
-from studyscribe.notes.prompts import map_prompt
+from studyscribe.notes.pipeline import coverage_gap
+from studyscribe.notes.prompts import PROMPT_VERSION, map_prompt
 from studyscribe.notes.providers import DEFAULT_MODELS, DEFAULT_PROVIDER, make_provider
 from studyscribe.notes.providers.base import EFFORTS, PROVIDERS, LlmError, LlmRequest
 from studyscribe.notes.providers.ollama import (
@@ -63,7 +65,7 @@ from studyscribe.notes.providers.ollama import (
 from studyscribe.notes.providers.retry import call_with_retry
 from studyscribe.notes.schema import output_model
 from studyscribe.notes.templates import builtin_template
-from studyscribe.notes.transcript import format_lines, make_lines, speech_ms
+from studyscribe.notes.transcript import format_lines, make_lines
 from studyscribe.transcribe.export import clock
 
 PROBE_SYSTEM = (
@@ -265,7 +267,7 @@ BLOCK_SYSTEM_V4 = (BLOCK_SYSTEM_V3[:BLOCK_SYSTEM_V3.index(_EXAMPLE_START)]
 
 PROMPTS = {"v1": BLOCK_SYSTEM, "v2": BLOCK_SYSTEM_V2, "v3": BLOCK_SYSTEM_V3,
            "v4": BLOCK_SYSTEM_V4}
-V5 = "v5"  # no string here: the pipeline's own map prompt (studyscribe.notes.prompts)
+V5 = PROMPT_VERSION  # no string here: the pipeline's own map prompt (v5, v5.1, ...)
 
 
 # --- draft correction pass (2026-11-16) ----------------------------------------------------------
@@ -344,6 +346,9 @@ def main() -> int:
                         help="ollama only: draft map prompt of the block test")
     parser.add_argument("--expect", action="append", default=[], metavar="WORD",
                         help="ollama only: report where WORD appears in the block's notes")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="ollama only: sampling seed (default: the provider's); another seed "
+                        "shows how much the answers vary")
     parser.add_argument("--corrections", action="store_true",
                         help="ollama only: the correction pass on every --session (one request "
                         "each) instead of the tiny request and the block test")
@@ -379,6 +384,8 @@ def run_cloud(args: argparse.Namespace) -> int:
 
 def run_ollama(args: argparse.Namespace) -> int:
     options = OllamaOptions(num_ctx=args.num_ctx, allow_cpu=args.allow_cpu)
+    if args.seed is not None:
+        options = dataclasses.replace(options, seed=args.seed)
     provider = OllamaProvider(args.model, options, on_progress=_progress)
     where = "this PC" if is_local(options.host) else "ANOTHER MACHINE: the text leaves this PC"
     print(f"Provider ollama at {options.host} ({where}), model {args.model}, "
@@ -481,7 +488,8 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
         blocks = cut_blocks(lines)
         part = next((b.index for b in blocks if b.start_ms <= block[0].start_ms <= b.end_ms), 1)
         prompt = map_prompt(template, block, part=part, parts=len(blocks),
-                            targets=template.targets(speech_ms(block), whole_lecture=False),
+                            targets=template.targets(block[-1].end_ms - block[0].start_ms,
+                                                     whole_lecture=False),
                             title=title, course=None, language=language or "en")
         system, user = prompt.system, prompt.user
         model, code_key = output_model(template), "examples"
@@ -522,7 +530,11 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
             print(f"  {'.'.join(str(p) for p in error['loc'])}: {error['msg']}")
         return
     print(f"Valid JSON at the first attempt: yes, saved to {out}")
-    report_block(notes.model_dump(), first, last, by_n, code_key, args, response.text)
+    data = notes.model_dump()
+    report_block(data, first, last, by_n, code_key, args, response.text)
+    gap = coverage_gap(data, Block(1, tuple(block)))
+    print("  coverage: " + (f"WARNING, {gap.describe()}" if gap
+                            else "ok (cites past 85% of the block)"))
 
 
 def report_block(data: dict, first: int, last: int, by_n: dict, code_key: str,
@@ -585,7 +597,8 @@ def _probe_file(kind: str, session_id: str, args: argparse.Namespace) -> Path:
     """One file per session, prompt, model and effort, so runs never overwrite each other."""
     PROBE_DIR.mkdir(exist_ok=True)
     model = re.sub(r"[^\w.-]", "-", args.model)
-    return PROBE_DIR / f"{kind}-{session_id}-{args.prompt}-{model}-{args.effort}.json"
+    seed = f"-seed{args.seed}" if args.seed is not None else ""
+    return PROBE_DIR / f"{kind}-{session_id}-{args.prompt}-{model}-{args.effort}{seed}.json"
 
 
 def correction_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: str) -> None:
