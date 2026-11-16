@@ -20,24 +20,23 @@ def studio_map(**kwargs):
     return map_prompt(STUDIO, LINES, **args)
 
 
-def test_map_prompt_has_lecture_part_range_language_sections_and_schema():
+def test_map_prompt_has_lecture_part_range_language_targets_and_schema():
     prompt = studio_map()
     system = prompt.system
-    assert 'Lecture: "Learn JavaScript", course: "Web basics". Part 2 of 15, from 0:12:34 to ' \
-           '0:12:50.' in system
+    assert ('Lecture: "Learn JavaScript", course: "Web basics". Part 2 of 15, from 0:12:34 to '
+            '0:12:50.') in system
     assert "Cite only S-numbers of this part (S41 to S42)" in system
     assert "Write in English." in system
-    assert 'goes into\n  "examples"' in system
-    assert '- "summary": ' in system and "About 3 sentences on this part, without refs." in system
-    assert '- "concepts": ' in system and "About 5 items." in system
-    assert '- "open_points": ' in system and "Only if there are any; up to about 1 item." \
-        in system
-    assert "Every one the lecturer reads aloud or names; empty if there are none." in system
-    assert system.split('- "definitions": ')[1].splitlines()[0].endswith("About 3 items.")
+    assert 'goes into\n   "examples"' in system
+    assert ('For\n   this part aim for a summary of about 3 sentences in "summary", about 3 '
+            'topics in "outline", about 5 items in "concepts", about 3 items in "definitions", '
+            'about 2 items in "questions" and only if there are any, up to 1 item in '
+            '"open_points"; fewer only') in system
     assert 'add an item to "open_points"' in system
+    assert '- "concepts": ' not in system  # v6: no list of sections, the schema describes them
     assert system.endswith(schema_text(STUDIO) + "\n")
-    assert prompt.user == "[0:12:34]\nS41 So var is one of them.\nS42 Then let our name " \
-                          "equals free code camp."
+    assert prompt.user == ("[0:12:34]\nS41 So var is one of them.\nS42 Then let our name "
+                           "equals free code camp.")
 
 
 def test_map_prompt_has_no_corrections_no_example_and_no_acceptance_cases():
@@ -48,15 +47,24 @@ def test_map_prompt_has_no_corrections_no_example_and_no_acceptance_cases():
     assert "keep the transcript's words" in system
 
 
-def test_map_prompt_v5_1_rules():
+def test_map_prompt_v6_rules():
     system = studio_map().system
-    assert "Cover the whole part, from S41 to S42: every subject the lecturer talks about " \
-           'gets a topic in "outline", the last minutes included.' in system
-    assert "Never fix a word you think was misheard" in system
+    assert "6. Keep the transcript's words. Never fix a word you think was misheard" in system
     assert 'you add an item to "open_points" that quotes it' in system
-    assert 'goes into "concepts" or "definitions", even when a library has something' in system
-    assert 'leave the\n    item out or add an item to "open_points";' in system
+    assert ('goes into\n     "concepts" or "definitions", even when a library has something'
+            in system)
+    assert 'leave the\n     item out or add an item to "open_points";' in system
     assert "worked examples" not in system
+
+
+def test_map_targets_in_words():
+    from studyscribe.notes.prompts import map_targets
+
+    assert map_targets(STUDIO, {"summary": 1, "outline": 1, "concepts": 0, "definitions": 2,
+                                "examples": 9, "questions": 1, "open_points": 0}) == (
+        'a summary of about 1 sentence in "summary", about 1 topic in "outline", only if '
+        'there are any, up to 1 item in "concepts", about 2 items in "definitions", about 1 '
+        'item in "questions" and only if there are any, up to 1 item in "open_points"')
 
 
 def test_map_prompt_without_course_in_italian_and_without_code_or_open_points():
@@ -68,7 +76,7 @@ def test_map_prompt_without_course_in_italian_and_without_code_or_open_points():
                         title="Lezione", course=None, language="it")
     assert 'Lecture: "Lezione". Part 1 of 1' in prompt.system
     assert "Write in Italian." in prompt.system
-    assert "- Code." not in prompt.system
+    assert "5. Code." not in prompt.system
     assert "leave it out" in prompt.system
     assert "{" not in prompt.system.split("Answer with JSON")[0]  # every placeholder filled
 

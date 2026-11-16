@@ -26,8 +26,11 @@ from studyscribe.transcribe.export import clock
 # v1-v4: the probe's drafts (scripts/llm_probe.py). v5: v4 without corrections (2026-11-16).
 # v5.1 (2026-11-16, after the v4/v5 probe): "about N" for every section but the open points,
 # v4's code rule in bullets, a rule against prose as code, an explicit no-fix rule, coverage of
-# the whole part.
-PROMPT_VERSION = "v5.1"
+# the whole part. It still rebuilt code from descriptions in Italian.
+# v6 (2026-11-16): v4's wording and layout (numbered rules, the targets inside rule 4, no list
+# of sections: their instructions reach the model through the schema's descriptions) with the
+# Studio schema, v5.1's no-fix rule (6) and the rule against prose as code (in rule 5).
+PROMPT_VERSION = "v6"
 PROMPT_FILES = ("map.md", "code-rule.md", "reduce.md")
 LANGUAGE_NAMES = {"en": "English", "it": "Italian", "fr": "French", "de": "German",
                   "es": "Spanish", "pt": "Portuguese"}
@@ -56,20 +59,38 @@ def map_prompt(template: Template, lines: Sequence[Line], *, part: int, parts: i
     code_rule = (_file("code-rule.md").format(key=examples.key, unclear=unclear,
                                               concept_keys=_concept_keys(template))
                  if examples else "")
-    outline = _first_of_kind(template, "outline")
-    coverage = (f'every subject the lecturer talks about gets a topic in "{outline.key}"'
-                if outline else "the notes take in every subject the lecturer talks about")
     open_points = _first_of_kind(template, "open_points")
     unclear_quote = (f'add an item to "{open_points.key}" that quotes it' if open_points
                      else "leave it as it is")
     system = _file("map.md").format(
         lecture=lecture_line(title, course), part=part, parts=parts,
         start=clock(lines[0].start_ms), end=clock(lines[-1].end_ms),
-        first=lines[0].label, last=lines[-1].label, unclear=unclear, coverage=coverage,
+        first=lines[0].label, last=lines[-1].label, unclear=unclear,
         unclear_quote=unclear_quote, language=language_name(language), code_rule=code_rule,
-        sections=section_lines(template, targets, scope="this part", all_code=True),
-        schema=schema_text(template))
+        targets=map_targets(template, targets), schema=schema_text(template))
     return Prompt(system=system, user=format_lines(lines))
+
+
+def map_targets(template: Template, targets: Mapping[str, int]) -> str:
+    """Rule 4's targets in words: "a summary of about 3 sentences, about 4 topics in
+    "outline", ... and, only if there are any, up to 1 item in "open_points"". The code
+    section has none: the map asks for every code element the lecturer says."""
+    parts = []
+    for section in template.sections:
+        n = targets[section.key]
+        if section.kind == "examples":
+            continue
+        if section.kind == "summary":
+            parts.append(f'a summary of about {_count(max(1, n), "sentence")} in '
+                         f'"{section.key}"')
+        elif section.kind == "outline":
+            parts.append(f'about {_count(n, "topic")} in "{section.key}"')
+        elif section.kind == "open_points" or n == 0:
+            parts.append(f'only if there are any, up to {_count(max(1, n), "item")} in '
+                         f'"{section.key}"')
+        else:
+            parts.append(f'about {_count(n, "item")} in "{section.key}"')
+    return ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1]
 
 
 def reduce_prompt(template: Template, inputs: Sequence[PartNotes], *, final: bool,
