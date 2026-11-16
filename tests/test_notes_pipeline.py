@@ -299,4 +299,4 @@ def test_map_targets_follow_the_block_duration_not_its_speech():
              for n in range(1, 73)]
     llm = FakeLlm(echo_notes)
     generate_notes(llm, STUDIO, lines, cut_blocks(lines), LECTURE, options=options())
-    assert 'about 5 items in "concepts"' in llm.requests[0].system
+    assert "About 5 items." in llm.requests[0].system.split('- "concepts": ')[1].splitlines()[0]
