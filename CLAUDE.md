@@ -198,6 +198,10 @@ py -3.12 -m venv .venv                          # create the venv
 .venv\Scripts\studyscribe record --title "Lecture 3" --course "Calculus"   # Ctrl+C to stop
 .venv\Scripts\studyscribe transcribe SESSION_ID  # transcribe (--language it, --restart)
 .venv\Scripts\studyscribe export SESSION_ID --audio   # rewrite exports, join audio.flac
+.venv\Scripts\studyscribe notes SESSION_ID         # study notes with Ollama (--restart, --effort)
+.venv\Scripts\studyscribe transcribe SESSION_ID --notes   # transcription, then the notes
+.venv\Scripts\studyscribe template list            # note templates (import FILE.json)
+.venv\Scripts\studyscribe config set ollama.num_ctx 32768   # settings (config show lists them)
 .venv\Scripts\studyscribe sessions               # list (recovers abandoned sessions first)
 .venv\Scripts\studyscribe recover                # recovery on demand
 .venv\Scripts\python scripts\capture_probe.py --seconds 60   # real-hardware capture probe
