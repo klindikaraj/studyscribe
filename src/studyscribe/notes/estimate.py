@@ -97,22 +97,24 @@ def answer_tokens(template: Template, speech_ms: int, *, whole_lecture: bool,
     return tokens
 
 
-def estimate_notes(template: Template, block_speech_ms: Sequence[int],
-                   map_prompt_chars: Sequence[int], reduce_system_chars: int,
-                   reduce_budget_tokens: int, *, thinking: bool,
+def estimate_notes(template: Template, block_duration_ms: Sequence[int],
+                   block_speech_ms: Sequence[int], map_prompt_chars: Sequence[int],
+                   reduce_system_chars: int, reduce_budget_tokens: int, *, thinking: bool,
                    assumptions: Assumptions = Assumptions()) -> Estimate:
-    """`block_speech_ms` and `map_prompt_chars`: per block, the speech and the characters of
-    its map prompt (system + user); `reduce_system_chars`: characters of a reduce prompt
-    without its input notes; `reduce_budget_tokens`: what one reduce may hold of input notes,
-    in the pipeline's conservative tokens (characters / `grouping_chars_per_token`)."""
+    """Per block: its duration (the map's targets), its speech (the reduces' targets) and the
+    characters of its map prompt (system + user), as the pipeline uses them;
+    `reduce_system_chars`: characters of a reduce prompt without its input notes;
+    `reduce_budget_tokens`: what one reduce may hold of input notes, in the pipeline's
+    conservative tokens (characters / `grouping_chars_per_token`)."""
     a = assumptions
-    if len(block_speech_ms) != len(map_prompt_chars):
-        raise ValueError("one speech duration and one prompt size per block")
+    if not len(block_duration_ms) == len(block_speech_ms) == len(map_prompt_chars):
+        raise ValueError("one duration, one speech and one prompt size per block")
     extra = a.thinking_tokens if thinking else 0
     parts = []  # (answer tokens, speech ms) of the parts the next reduce gets
     requests = []
-    for speech, chars in zip(block_speech_ms, map_prompt_chars, strict=True):
-        answer = answer_tokens(template, speech, whole_lecture=False, assumptions=a)
+    for duration, speech, chars in zip(block_duration_ms, block_speech_ms, map_prompt_chars,
+                                       strict=True):
+        answer = answer_tokens(template, duration, whole_lecture=False, assumptions=a)
         requests.append(RequestEstimate("map", _tokens(chars, a), answer + extra))
         parts.append((answer, speech))
     system = _tokens(reduce_system_chars, a)

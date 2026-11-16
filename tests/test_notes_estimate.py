@@ -12,6 +12,11 @@ ONE = parse_template(json.dumps({
     "id": "one", "title": {"en": "One"},
     "sections": [{"key": "points", "kind": "bullets", "heading": {"en": "Points"},
                   "instructions": "Points.", "per_hour": 10, "min": 1, "max": 100}]}))
+def est(blocks_ms, *args, **kwargs):
+    """The One template, blocks whose speech equals their duration."""
+    return estimate_notes(ONE, blocks_ms, blocks_ms, *args, **kwargs)
+
+
 PLAIN = Assumptions(chars_per_token=4.0, grouping_chars_per_token=4.0, tokens_per_item=100,
                     answer_overhead_tokens=0, thinking_tokens=7000, retry_margin=0.0)
 
@@ -24,7 +29,7 @@ def test_answer_tokens_follow_the_template_targets():
 
 
 def test_short_lecture_two_maps_and_one_reduce():
-    estimate = estimate_notes(ONE, [12 * MIN, 6 * MIN], [20_000, 12_000], 4_000, 16_000,
+    estimate = est([12 * MIN, 6 * MIN], [20_000, 12_000], 4_000, 16_000,
                               thinking=False, assumptions=PLAIN)
     assert [r.stage for r in estimate.requests] == ["map", "map", "reduce"]
     assert [r.input_tokens for r in estimate.requests] == [5_000, 3_000, 1_000 + 300]
@@ -35,7 +40,7 @@ def test_short_lecture_two_maps_and_one_reduce():
 def test_long_lecture_gets_partial_reduces_sized_from_their_speech():
     # 14 blocks of 30 minutes: 500 tokens each, 7,000 in all, budget 2,000 -> 4 partials
     # (4, 4, 4 and 2 blocks), then the final reduce on their answers
-    estimate = estimate_notes(ONE, [30 * MIN] * 14, [24_000] * 14, 4_000, 2_000,
+    estimate = est([30 * MIN] * 14, [24_000] * 14, 4_000, 2_000,
                               thinking=False, assumptions=PLAIN)
     assert estimate.count("map") == 14 and estimate.count("partial") == 4
     partial = [r for r in estimate.requests if r.stage == "partial"]
@@ -46,9 +51,9 @@ def test_long_lecture_gets_partial_reduces_sized_from_their_speech():
 
 
 def test_grouping_uses_the_pipelines_conservative_size():
-    loose = estimate_notes(ONE, [30 * MIN] * 4, [1_000] * 4, 400, 2_000, thinking=False,
+    loose = est([30 * MIN] * 4, [1_000] * 4, 400, 2_000, thinking=False,
                            assumptions=PLAIN)
-    tight = estimate_notes(ONE, [30 * MIN] * 4, [1_000] * 4, 400, 2_000, thinking=False,
+    tight = est([30 * MIN] * 4, [1_000] * 4, 400, 2_000, thinking=False,
                            assumptions=Assumptions(chars_per_token=4.0,
                                                    grouping_chars_per_token=2.0,
                                                    tokens_per_item=100,
@@ -57,9 +62,9 @@ def test_grouping_uses_the_pipelines_conservative_size():
 
 
 def test_thinking_adds_tokens_to_every_request():
-    off = estimate_notes(ONE, [12 * MIN] * 2, [20_000] * 2, 4_000, 16_000, thinking=False,
+    off = est([12 * MIN] * 2, [20_000] * 2, 4_000, 16_000, thinking=False,
                          assumptions=PLAIN)
-    on = estimate_notes(ONE, [12 * MIN] * 2, [20_000] * 2, 4_000, 16_000, thinking=True,
+    on = est([12 * MIN] * 2, [20_000] * 2, 4_000, 16_000, thinking=True,
                         assumptions=PLAIN)
     assert on.output_tokens - off.output_tokens == 3 * 7_000
 
@@ -67,7 +72,7 @@ def test_thinking_adds_tokens_to_every_request():
 def test_retry_margin_time_and_cost():
     a = Assumptions(chars_per_token=4.0, tokens_per_item=100, answer_overhead_tokens=0,
                     retry_margin=0.15)
-    estimate = estimate_notes(ONE, [12 * MIN, 6 * MIN], [20_000, 12_000], 4_000, 16_000,
+    estimate = est([12 * MIN, 6 * MIN], [20_000, 12_000], 4_000, 16_000,
                               thinking=False, assumptions=a)
     assert estimate.input_tokens == math.ceil(9_300 * 1.15)
     assert estimate.output_tokens == math.ceil(600 * 1.15)
@@ -81,7 +86,9 @@ def test_retry_margin_time_and_cost():
 
 
 def test_no_blocks_no_requests_and_mismatched_inputs():
-    assert estimate_notes(ONE, [], [], 4_000, 16_000, thinking=False).requests == ()
+    assert est([], [], 4_000, 16_000, thinking=False).requests == ()
     with pytest.raises(ValueError):
-        estimate_notes(ONE, [MIN], [], 4_000, 16_000, thinking=False)
+        est([MIN], [], 4_000, 16_000, thinking=False)
+    with pytest.raises(ValueError):
+        estimate_notes(ONE, [MIN], [], [1_000], 4_000, 16_000, thinking=False)
 
