@@ -223,9 +223,16 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
   becomes many times slower. After loading (a request with no messages loads the model), the
   provider reads `/api/ps`: if `size_vram < size`, it stops with: "qwen3.5:9b fits only partly in
   GPU memory (6.1 of 8.4 GB). Close apps that use the GPU (games, video editors, browsers with
-  hardware acceleration), or use a smaller model (`--model qwen3.5:4b`) or a smaller context
-  (`config set ollama.num_ctx 16384`)." `--allow-cpu` proceeds anyway. `/api/ps` also reports the
-  `context_length` actually used, which must equal `num_ctx`.
+  hardware acceleration), or use a smaller model (`--model qwen3.5:4b`)." `--allow-cpu`
+  proceeds anyway. (Until 2026-11-16 it also suggested a smaller context, which `notes` refuses
+  below 32,768: removed.) `/api/ps` also reports the `context_length` actually used, which must
+  equal `num_ctx`.
+- Models Ollama already holds (`/api/ps`) are not "memory used by others" (fixed 2026-11-16
+  after the user's manual test): the same model with the same context, entirely in GPU memory,
+  is reused with no memory check; any other entry (the same model with another context, or
+  another model) is counted as free memory, because Ollama unloads it to load ours, and the
+  CLI says so. When a model Ollama holds is part of the problem, the remedy says to wait for
+  it to unload or to run `ollama stop <model>`.
 - Before loading, free VRAM from `nvidia-smi` (installed with the driver; skipped if missing) is
   compared with the model's size from `/api/ps` of the last run or its download size + KV
   estimate: if clearly too small, the same message before waiting for the load.
@@ -1252,3 +1259,33 @@ stable. The prompt is frozen until the piece 5 acceptance: noted as a known issu
 Not verified yet (the user's manual test): Ctrl+C and a kill from Task Manager on a real run,
 the resume after them, `transcribe --notes` with the real Whisper (VRAM freed before Ollama
 loads), the 3 h lecture (partial reduces with real answers).
+
+### Piece 3: the user's manual test on it-copy (2026-11-16)
+
+Steps 1, 2, 3, 5 and 7 of the checklist passed. Step 4 (killing the process from Task Manager)
+was done during the final reduce instead of map 2/2: `sessions` showed `interrupted 2/2` and the
+resume redid only the final reduce. A `--restart` refused because of `num_ctx` 16384 left the
+done notes untouched.
+
+Two bugs found, fixed in commit 188cd3b:
+1. The resume was refused by the GPU memory check. After the kill, qwen3.5:9b stays loaded in
+   Ollama (keep_alive, as expected); a new `notes` within those minutes counted its 7.7 GB as
+   memory used by others: "needs about 7.6 GB ... 4.3 GB are free". The user had to run
+   `ollama stop qwen3.5:9b`. Now `/api/ps` is read first: the same model with the same context
+   is reused; anything else Ollama holds counts as free and the CLI prints a line about it.
+   Checked against the real Ollama too: a model left loaded by an abandoned provider was
+   reused (load 0.0 s); with another context Ollama reloaded it (13.7 s), and the GPU went
+   back to 917 MiB after the unload.
+2. The GPU memory remedy suggested "a smaller context (16384 tokens instead of 32768)", which
+   `notes` refuses. Removed, together with "Use a smaller context" in the context-mismatch
+   message (now: check `OLLAMA_CONTEXT_LENGTH`). The remaining remedies suggest only values the
+   program accepts (`--model qwen3.5:4b`, `--allow-cpu`, `config set ollama.num_ctx 32768`).
+
+Measured by the user on the resume: the 5 token counts took 11.1 s, against 4.6 s in the first
+run, probably because the model had to be loaded again first (the first count loads it). So a
+token count costs about 0.9 s with the model in memory and up to about 2.2 s on average when the
+load falls inside the counts; the estimate does not include them (0.1-0.2 minutes on the
+Italian lecture; on the 3 hours, 15 maps plus the partial answers, about 20 counts: 20-45 s).
+
+Ollama updated itself from 0.40.15 (2026-11-09) to 0.40.16 (seen on 2026-11-16): the probe and
+`config show` print the version, so the test results can be tied to it.
