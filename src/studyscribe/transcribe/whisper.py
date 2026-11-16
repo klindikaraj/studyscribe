@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from collections.abc import Iterator
 
 import numpy as np
@@ -100,6 +101,22 @@ class FasterWhisperTranscriber:
         except Exception as exc:
             raise TranscriberError(describe_error(exc)) from exc
         return cls(whisper, name, compute_type, device)
+
+    def close(self) -> None:
+        """Free the GPU memory: CTranslate2 releases it when the model is unloaded or its last
+        reference goes away. Verified only by the manual test (nvidia-smi back to the
+        baseline before the notes start)."""
+        model, self._model = self._model, None
+        if model is None:
+            return
+        try:
+            inner = getattr(model, "model", None)  # the ctranslate2.models.Whisper
+            if inner is not None and hasattr(inner, "unload_model"):
+                inner.unload_model()
+        except Exception:  # noqa: BLE001 - closing must never fail
+            pass
+        del model
+        gc.collect()
 
     def options(self) -> dict:
         return {"engine": ENGINE, "model": self.model, "compute_type": self.compute_type,

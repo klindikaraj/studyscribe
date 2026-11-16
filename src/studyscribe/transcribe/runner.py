@@ -113,6 +113,7 @@ def transcribe_session(
     if not lock.acquire():
         raise CannotTranscribe("another process is transcribing this session")
     run_id = None
+    transcriber = None
     try:
         transcriber = load()
         options_json = json.dumps(run_options(transcriber, language, hints, normalize_audio),
@@ -131,6 +132,8 @@ def transcribe_session(
                 repo.set_run_status(conn, run_id, "interrupted", error or type(exc).__name__)
         raise
     finally:
+        if transcriber is not None:
+            transcriber.close()  # its GPU memory is free before anything else runs
         lock.release()
 
 

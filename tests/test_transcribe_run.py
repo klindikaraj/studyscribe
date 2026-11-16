@@ -286,3 +286,13 @@ def test_progress_line_on_a_terminal() -> None:
     line = out.getvalue().split("\r")[-1]
     assert "50%" in line and "0:30:00 / 1:00:00" in line and "elapsed 0:01:00" in line
     assert "left ~0:01:00" in line and "30x" in line
+
+
+def test_the_engine_is_closed_after_the_run_and_after_an_error(db, data_dir, recorded):
+    engine = FakeTranscriber()
+    run(db, data_dir, recorded(), engine)
+    assert engine.closed
+    failing = FailingTranscriber(0, TranscriberError("out of memory"))
+    with pytest.raises(TranscriberError):
+        run(db, data_dir, recorded(), failing)
+    assert failing.closed

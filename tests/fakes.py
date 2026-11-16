@@ -306,6 +306,11 @@ class FakeTranscriber:
     def options(self) -> dict:
         return {"engine": self.engine, "model": self.model}
 
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
     def language_probabilities(self, speech: np.ndarray) -> dict[str, float]:
         self.detected.append(speech.size)
         return dict(self._probabilities)

@@ -53,3 +53,8 @@ class Transcriber(Protocol):
     def options(self) -> dict:
         """Everything about the engine that shapes its output (stored with the run)."""
         ...
+
+    def close(self) -> None:
+        """Release the model and its GPU memory (before a local LLM needs it). Never raises;
+        the engine must not be used afterwards."""
+        ...
