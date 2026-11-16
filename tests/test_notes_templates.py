@@ -40,8 +40,8 @@ def test_targets_for_the_whole_lecture_are_clamped():
     studio = builtin_template()
     three_hours = studio.targets(int(2.77 * HOUR), whole_lecture=True)
     assert three_hours["summary"] == 8  # 12 per hour, max 8
-    assert three_hours["concepts"] == 40  # 66, max 40
-    assert three_hours["questions"] == 20
+    assert three_hours["concepts"] == 20  # 66, max 20 (lowered so the final reduce fits 8k)
+    assert three_hours["questions"] == 10
     twenty_minutes = studio.targets(int(0.29 * HOUR), whole_lecture=True)
     assert twenty_minutes["summary"] == 5  # 3.5, min 5
     assert twenty_minutes["questions"] == 5

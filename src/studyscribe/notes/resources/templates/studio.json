@@ -15,42 +15,42 @@
       "kind": "outline",
       "heading": {"en": "Outline", "it": "Scaletta"},
       "instructions": "The topics in the order they are taught, each with the line where it starts.",
-      "per_hour": 16, "min": 3, "max": 30
+      "per_hour": 16, "min": 3, "max": 15
     },
     {
       "key": "concepts",
       "kind": "concepts",
       "heading": {"en": "Key concepts", "it": "Concetti chiave"},
       "instructions": "The ideas the lecturer explains, each in a few sentences.",
-      "per_hour": 24, "min": 3, "max": 40
+      "per_hour": 24, "min": 3, "max": 20
     },
     {
       "key": "definitions",
       "kind": "definitions",
       "heading": {"en": "Definitions", "it": "Definizioni"},
       "instructions": "The terms the lecturer defines, in the lecturer's wording with only the spoken fillers removed.",
-      "per_hour": 16, "min": 0, "max": 30
+      "per_hour": 16, "min": 0, "max": 12
     },
     {
       "key": "examples",
       "kind": "examples",
       "heading": {"en": "Examples and code", "it": "Esempi e codice"},
-      "instructions": "Code the lecturer reads aloud or names, written as in a source file, and worked examples; \"code\" is empty for an example without code.",
-      "per_hour": 24, "min": 0, "max": 50
+      "instructions": "Code the lecturer reads aloud or names, written as in a source file. An example the lecturer only describes in words has an empty \"code\": never write code for it.",
+      "per_hour": 24, "min": 0, "max": 20
     },
     {
       "key": "questions",
       "kind": "questions",
       "heading": {"en": "Review questions", "it": "Domande di ripasso"},
       "instructions": "Questions a student can answer from this lecture alone, each with its answer from the lecture and a difficulty.",
-      "per_hour": 8, "min": 5, "max": 20
+      "per_hour": 8, "min": 5, "max": 10
     },
     {
       "key": "open_points",
       "kind": "open_points",
       "heading": {"en": "Unclear points", "it": "Punti poco chiari"},
       "instructions": "Points the lecturer leaves unexplained or defers, and passages where the transcript looks misrecognised.",
-      "per_hour": 4, "min": 0, "max": 15
+      "per_hour": 4, "min": 0, "max": 6
     }
   ]
 }
