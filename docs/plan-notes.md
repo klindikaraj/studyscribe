@@ -342,13 +342,13 @@ Modules, one commit each, in this order:
 3. `blocks.py`: blocks of 10-15 minutes cut at the longest gap between two lines whose cut
    falls in that range; a last block under 5 minutes joins the previous one; a lecture of at
    most 15 minutes is one block.
-4. `templates.py` + `templates/studio.json`: template model (pydantic), loading of the
+4. `templates.py` + `resources/templates/studio.json`: template model (pydantic), loading of the
    built-ins and of a user JSON file, targets per section from the speech duration (items per
    hour, clamped to a minimum and a maximum). The database table and `template import` stay in
    piece 3.
 5. `schema.py`: pydantic models per section kind, the output model built from a template. Map,
    partial reduce and final reduce use the same model; only the targets in the prompt differ.
-6. `prompts.py` + `prompts/map.md`, `prompts/reduce.md`: `PROMPT_VERSION`, a hash of the prompt
+6. `prompts.py` + `resources/prompts/map.md`, `code-rule.md`, `reduce.md`: `PROMPT_VERSION`, a hash of the prompt
    files, rendering of the map, partial and final prompts.
 7. `refs.py`: reference checks (inside the block for map, among the input's references for the
    reduces), drops and counts, the 25% rule, S-numbers inside text, resolution `S<n>` →
@@ -394,10 +394,10 @@ src/studyscribe/notes/
   transcript.py         Line, the prompt's line format (pure)
   uncertain.py          words Whisper was unsure about, for the appendix (pure)
   templates.py          template model, loading, targets (built-in sync to the db: piece 3)
-  templates/studio.json
+  resources/templates/studio.json   (not `data/`: .gitignore ignores every `data/`)
   schema.py             pydantic models per section kind, output model built from a template
   prompts.py            PROMPT_VERSION, prompt rendering, hash of the prompt files
-  prompts/map.md, prompts/reduce.md
+  resources/prompts/map.md, code-rule.md, reduce.md
   blocks.py             block cuts in pauses (pure)
   reduce_plan.py        grouping of map outputs for the hierarchical reduce (pure)
   refs.py               reference validation and resolution (pure)
@@ -420,7 +420,8 @@ Changed: `pyproject.toml`, `db/migrations.py` (V3), `db/repo.py`, `session.py` (
    `end_ms - start_ms` of kept segments); the transcript has a language or `--notes-language` is
    given; a key exists for the provider (cloud), or Ollama runs and has the model (local).
 2. Blocks: 10 to 15 minutes each, cut at the longest gap between two segments in that range; a
-   last block under 5 minutes joins the previous one. About 14 blocks for 3 h, 2 for 20 min.
+   last block under 5 minutes joins the previous one. 15 blocks for the 3 h lecture (one of
+   5.6 minutes, cut at the 5-minute pause), 2 for the 20-minute one (measured 2026-11-16).
 3. Estimate: requests, input and output tokens; cloud: cost (charged and list price) and
    requests against the per-minute and per-day limits, confirmation above the threshold (with no
    terminal and no `--yes`, nothing is sent); Ollama: estimated time, no confirmation, then the
@@ -471,7 +472,9 @@ step 3**. The transcript stays faithful to the audio and so do the notes' words.
   a word of 3+ letters is *found* when a word of the cited lines ±1 contains it, is at least
   80% similar to it, or when it is the initials of consecutive words there ("mean squared
   error" → `MSE`); shorter words (`nn`, `y`, `lr`) are not checked. A name is found when all its
-  words are, partly found when some are, missing when none is. The item gets:
+  words are; partly found when some are, or when its words are found only elsewhere in the
+  lecture (added in the implementation: `y_pred` cited on "y previsti" while `YPRED` is said
+  four lines later); missing when none is found anywhere. The item gets:
   - `ok`: every name found (`y_pred` from "ipsilon pred", `torch.nn.Linear` from "PyTorch
     neural network Linear");
   - `check` ("to verify"): a name only partly found;
@@ -954,3 +957,25 @@ rules, a made-up example that avoids the acceptance cases, S-numbers only in ref
 cap of 16384 with thinking on, `--expect WORD` to find a word in the notes, and a check for
 S-numbers inside code and for text copied from the example. Defaults unchanged: ollama /
 `qwen3.5:9b`, effort none.
+
+### Piece 2: pipeline (Claude, 2026-11-16; offline, no model)
+
+Modules `transcript`, `uncertain`, `blocks`, `templates`, `schema`, `prompts`, `refs`,
+`code_check`, `reduce_plan`, `estimate`, `pipeline`, each with tests (`FakeLlm`, no network);
+457 tests pass. Checked on the two test copies, read-only:
+
+- Uncertain words: the same 3 (it) and 11 (en) words as the probe, with word timestamps.
+- Blocks: 2 (it) and 15 (en). The largest map prompt is about 21k characters (about 8.4k tokens
+  at the guard's 2.5 characters per token), far inside the 26,112-token budget at `num_ctx`
+  32768.
+- Estimate, thinking off: it 2 maps + 1 reduce, about 5 minutes; en 15 maps, 3 partial
+  reduces and 1 final reduce, about 150k tokens in and 64k out, about 25 minutes. Not measured.
+- Code-name check on the saved probe answers of 2026-11-10 (the `v4` files had been
+  overwritten by the Gemma run): English, 28 of 31 items `ok` (3 `check`, a name cited on the
+  wrong line); Italian, mostly warnings: `y_prediatti`, `optimizer`, `criterion` and the alias
+  `plt` are `unsupported`, `y_pred` and `torch.manual_seed` are `check`, `nn.Linear` and
+  `unsqueeze` are `ok`. In an Italian lecture an English name for a word said in Italian
+  ("ottimizzatore") cannot be told from an invented one.
+- Prompt v5 (map and reduce) has not been run on a model yet: v4's results do not carry over
+  automatically (rules as bullets, section instructions from the template, the code section
+  named `examples` instead of `code`).
