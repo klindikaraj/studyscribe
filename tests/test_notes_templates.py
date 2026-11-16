@@ -91,3 +91,16 @@ def test_unknown_builtin_and_unreadable_file(tmp_path):
 
 def test_kinds():
     assert "open_points" in SECTION_KINDS and len(SECTION_KINDS) == 8
+
+
+def test_partial_targets_are_a_share_of_the_final_ones():
+    studio = builtin_template()
+    total = int(2.77 * HOUR)
+    final = studio.targets(total, whole_lecture=True)
+    half = studio.partial_targets(total // 2, total)
+    assert half["concepts"] == round(final["concepts"] * 0.5 * 1.5)  # 15 of 20
+    assert half["summary"] == 6  # 8 * 0.5 * 1.5
+    assert all(half[k] <= studio.targets(total // 2, whole_lecture=False)[k] for k in half)
+    tiny = studio.partial_targets(60_000, total)
+    assert tiny["outline"] == 1 and tiny["open_points"] == 0  # min 1 kept, min 0 may be 0
+    assert studio.partial_targets(60_000, 0)["outline"] >= 1  # no total: no share

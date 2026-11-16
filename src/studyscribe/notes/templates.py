@@ -25,6 +25,7 @@ SECTION_KINDS: tuple[str, ...] = SectionKind.__args__  # type: ignore[attr-defin
 DEFAULT_TEMPLATE = "studio"
 FALLBACK_LANGUAGE = "en"
 HOUR_MS = 3_600_000
+PARTIAL_SLACK = 1.5
 
 
 class TemplateError(ValueError):
@@ -84,6 +85,21 @@ class Template(BaseModel):
 
     def targets(self, speech_ms: int, *, whole_lecture: bool) -> dict[str, int]:
         return {s.key: s.target(speech_ms, whole_lecture=whole_lecture) for s in self.sections}
+
+    def partial_targets(self, part_speech_ms: int, total_speech_ms: int,
+                        slack: float = PARTIAL_SLACK) -> dict[str, int]:
+        """Targets of a partial reduce: its share of the final notes' targets, times `slack`
+        (room for the final reduce to choose and merge), never above its own part targets.
+        Without the share, partial answers are as long as the final one and two of them no
+        longer fit the final reduce's input (found by the estimate, 2026-11-16)."""
+        final = self.targets(total_speech_ms, whole_lecture=True)
+        share = part_speech_ms / total_speech_ms if total_speech_ms > 0 else 1.0
+        out = {}
+        for section in self.sections:
+            low = min(1, section.min)
+            wanted = max(low, round(final[section.key] * share * slack))
+            out[section.key] = min(section.target(part_speech_ms, whole_lecture=False), wanted)
+        return out
 
     def to_json(self) -> str:
         """The copy stored with every generation (a template can change afterwards)."""
