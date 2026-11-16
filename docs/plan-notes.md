@@ -301,7 +301,8 @@ whether two identical seeded requests give the same text.
    reduce plan, estimate, map / reduce with validation and retries, resume from stored map
    outputs. No database, no network: all tests offline with a fake LLM (`FakeLlm`).
 3. Database v3 and CLI: `notes`, `transcribe --notes`, estimate and confirmation, recovery,
-   `template list/import`, NOTES column in `sessions`.
+   `template list/import`, NOTES column in `sessions`. **Done offline and on it-copy (2026-11-16); manual test by the user
+   pending.**
 4. Export: `notes.md`, `notes.html` with player and clickable timestamps, `audio.flac` when
    missing.
 5. Acceptance: notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
@@ -1204,3 +1205,50 @@ To check at the acceptance (piece 5): generation speed was 51-52 tokens/s in the
 runs of 2026-11-16, 44-45 in the v5.1/v6 runs a few hours later and 49-50 in the experiment,
 same model and settings. Not investigated; at the acceptance, run with the GPU free (no other
 program using it) and compare.
+
+### Piece 3: database v3, runner, CLI (Claude, 2026-11-16)
+
+Done: migration v3 (`settings`, `templates`, `generated_notes`, `llm_calls`) with an automatic
+backup of the database file before any migration (`<data>/backups/app-v<old>-<time>.db`,
+SQLite's online backup); `notes/runner.py` (checks, notes lock on byte 3, generation lifecycle,
+one `llm_calls` row per request committed as it comes, resume from the accepted map answers,
+`--restart` and changed options discard the open generation as 'failed' and keep it);
+`recover_notes` (run by `sessions`, `recover`, `record`, `transcribe`, `notes`);
+`Transcriber.close()` (Whisper unloads and `gc.collect()` at the end of every transcription);
+CLI `notes`, `transcribe --notes`, `template list|import`, `config set ollama.num_ctx|
+notes.confirm_usd` (and the settings in `config show`), the NOTES column in `sessions`.
+Checks before anything is sent: a done transcript, at least 5 minutes of speech, a language
+(or `--notes-language`), the template, `ollama.num_ctx` of at least 32,768, Ollama running and
+the model downloaded. 510 tests pass.
+
+Migration on the test copies (only there): 3h-copy and it-copy went from v2 to v3, a backup of
+each was written first (2.9 MB and 0.4 MB), `PRAGMA integrity_check` ok.
+
+First real run (`studyscribe notes 20261102-173400-e04c56` on it-copy; qwen3.5:9b, effort none,
+prompt v5.1, Ollama 0.40.16, GPU at 1,195 MiB before loading):
+
+| | |
+|---|---|
+| Estimate shown | 2 maps + 1 final reduce, about 15.3k tokens in, 4.7k out, about 1 min 41 s plus loading |
+| Total (wall) | 1 min 38 s |
+| Map | 48.5 s: block 1 (S1-S168) 32.7 s, 5,640 in / 1,095 out, of which 10.3 s of prefill (546 tokens/s, the first request after loading); block 2 (S169-S241) 15.8 s, 3,680 / 679 |
+| Reduces | no partial; final reduce 37.4 s, 2,847 in / 1,810 out, prefill 0.06 s (the prompt was in Ollama's cache from the token count just before) |
+| Generation speed | 48.5-49.7 tokens/s |
+| Tokens per item (measured on the map answers) | 63.2 |
+| Token counts | 5 calls, 4.6 s in all (about 0.9 s each); part of it comes back as the cached prefill of the reduce |
+| Model load | about 7 s (not stored: wall time minus calls and counts) |
+| After the run | `/api/ps` empty, GPU back to 1,224 MiB |
+| References | 44 in the maps, 47 in the final reduce, none invalid |
+| Coverage warning | block 2: the notes cite up to S225; S226-S241 (0:17:12-0:18:07) not covered. S226-S227 are content (the learning rate is lowered and the model trained again); the rest is the video's closing |
+| Words to check by listening | 3 (Adam, significa, TEC) |
+
+Final notes against the targets for 17.5 minutes of speech: summary 4 sentences (target 5),
+outline 5 (5), concepts 7 (7), definitions 4 (5), questions 5 (5), open points 0 (up to 1),
+**code 0 (7)**. Neither map answer has a single code item, although the v5.1 probe on the
+block 0:05-0:20 had 3 to 5 (with seeds 1 and 2): the blocks differ (the pipeline cuts
+0:00:09-0:12:41 and 0:12:41-0:18:07), so code extraction in Italian with prompt v5.1 is not
+stable. The prompt is frozen until the piece 5 acceptance: noted as a known issue for it.
+
+Not verified yet (the user's manual test): Ctrl+C and a kill from Task Manager on a real run,
+the resume after them, `transcribe --notes` with the real Whisper (VRAM freed before Ollama
+loads), the 3 h lecture (partial reduces with real answers).
