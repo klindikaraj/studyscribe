@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -492,7 +493,8 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
                                                      whole_lecture=False),
                             title=title, course=None, language=language or "en")
         system, user = prompt.system, prompt.user
-        model, code_key = output_model(template), "examples"
+        model = output_model(template)
+        code_key = next(s.key for s in template.sections if s.kind == "examples")
     else:
         user = format_lines(block)
         system = PROMPTS[args.prompt].format(
@@ -520,7 +522,7 @@ def block_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: 
           f"({chars / usage.input_tokens:.2f} chars/token), output {usage.output_tokens:,} tokens"
           f" (thinking {usage.thinking_tokens})" + (f", {rate:.1f} tokens/s" if rate else ""))
     _print_timings(response)
-    out = _probe_file("block", session_id, args)
+    out = _probe_file("block", session_id, args, request)
     out.write_text(response.text, encoding="utf-8")
     try:
         notes = model.model_validate_json(response.text)
@@ -593,12 +595,18 @@ def report_block(data: dict, first: int, last: int, by_n: dict, code_key: str,
         print(f"  {word!r}: " + (f"in {', '.join(where)}" if where else "NOT FOUND"))
 
 
-def _probe_file(kind: str, session_id: str, args: argparse.Namespace) -> Path:
-    """One file per session, prompt, model and effort, so runs never overwrite each other."""
+def _probe_file(kind: str, session_id: str, args: argparse.Namespace,
+                request: LlmRequest) -> Path:
+    """One file per session, prompt, model, effort, seed and request text: the name ends with a
+    hash of the system prompt and the schema, so a changed template or schema under the same
+    prompt version never overwrites an earlier answer (it did once, 2026-11-16)."""
     PROBE_DIR.mkdir(exist_ok=True)
     model = re.sub(r"[^\w.-]", "-", args.model)
     seed = f"-seed{args.seed}" if args.seed is not None else ""
-    return PROBE_DIR / f"{kind}-{session_id}-{args.prompt}-{model}-{args.effort}{seed}.json"
+    digest = hashlib.sha256((request.system + json.dumps(request.schema, sort_keys=True))
+                            .encode("utf-8")).hexdigest()[:8]
+    return PROBE_DIR / (f"{kind}-{session_id}-{args.prompt}-{model}-{args.effort}{seed}"
+                        f"-{digest}.json")
 
 
 def correction_probe(provider: OllamaProvider, args: argparse.Namespace, session_id: str) -> None:
@@ -632,7 +640,7 @@ def correction_probe(provider: OllamaProvider, args: argparse.Namespace, session
     print(f"Answer in {response.duration_s:.1f} s: input {usage.input_tokens:,} tokens, output "
           f"{usage.output_tokens:,} tokens (thinking {usage.thinking_tokens})")
     _print_timings(response)
-    out = _probe_file("corrections", session_id, args)
+    out = _probe_file("corrections", session_id, args, request)
     out.write_text(response.text, encoding="utf-8")
     try:
         answer = CorrectionPass.model_validate_json(response.text)
