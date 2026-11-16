@@ -9,7 +9,6 @@ the others. Sizes are estimated input tokens; the budget is what one request may
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 
 
@@ -57,17 +56,3 @@ def _greedy(sizes: Sequence[int], limit: int) -> list[list[int]]:
         total += size
     return groups
 
-
-def levels_estimate(sizes: Sequence[int], budget: int, shrink: float = 0.5) -> int:
-    """Partial-reduce requests expected, assuming each partial output is `shrink` times its
-    input: for the estimate before a run."""
-    requests = 0
-    current = list(sizes)
-    for _ in range(8):
-        if not current or fits(current, budget):
-            return requests
-        groups = plan_groups(current, budget)
-        requests += sum(1 for g in groups if len(g) > 1)
-        current = [math.ceil(sum(current[i] for i in g) * (shrink if len(g) > 1 else 1))
-                   for g in groups]
-    return requests

@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-from studyscribe.notes.reduce_plan import ReduceTooLarge, fits, levels_estimate, plan_groups
+from studyscribe.notes.reduce_plan import ReduceTooLarge, fits, plan_groups
 
 
 def sums(sizes, groups):
@@ -51,11 +51,3 @@ def test_groups_cover_all_consecutively_within_budget(sizes, budget):
     assert [i for g in groups for i in g] == list(range(len(sizes)))
     assert all(g for g in groups) and max(sums(sizes, groups)) <= budget
 
-
-def test_levels_estimate():
-    assert levels_estimate([1000] * 3, 16_000) == 0
-    # 3 partials of 5, 5 and 4 outputs; at half size (18.2k) they still do not fit, so one more
-    # partial on the first two; at 0.3 (10.9k) the final reduce takes them directly
-    assert levels_estimate([2600] * 14, 16_000) == 4
-    assert levels_estimate([2600] * 14, 16_000, shrink=0.3) == 3
-    assert levels_estimate([2600] * 14, 16_000, shrink=1.0) == 3  # no progress: stops
