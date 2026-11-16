@@ -979,3 +979,85 @@ Modules `transcript`, `uncertain`, `blocks`, `templates`, `schema`, `prompts`, `
 - Prompt v5 (map and reduce) has not been run on a model yet: v4's results do not carry over
   automatically (rules as bullets, section instructions from the template, the code section
   named `examples` instead of `code`).
+
+### Map prompt v4 vs v5 (Claude, 2026-11-16)
+
+qwen3.5:9b, effort none, Ollama 0.40.16, all on the GPU; the same lines as the probes of
+2026-11-10 (en 0:30-0:45, S243-S327; it 0:05-0:20, S62-S241). v4 run again because its files
+had been overwritten by the Gemma run; answers now in `%TEMP%\studyscribe-probe\`, one file per
+session, prompt, model and effort. v4 uses the probe's schema (topics, concepts, definitions,
+code, open points, corrections), v5 the pipeline's Studio schema (summary, outline, concepts,
+definitions, examples, questions, open points). Code levels from `code_check.py` for both.
+
+| | en v4 | en v5 | it v4 | it v5 |
+|---|---|---|---|---|
+| Time | 24.4 s | 18.6 s | 32.2 s | 30.3 s |
+| Input / output tokens | 3,533 / 1,180 | 4,019 / 860 | 5,328 / 1,518 | 5,813 / 1,382 |
+| Generation / prefill tokens/s | 52.3 / 1,899 | 52.1 / 1,887 | 51.7 / 1,903 | 50.9 / 1,882 |
+| Valid JSON at the first attempt | yes | yes | yes | yes |
+| Summary sentences | — | 2 (target 3) | — | 3 |
+| Topics / outline | 4 | 3 (target 3) | 4 | 3 |
+| Concepts | 4 | 4 (target 5) | 6 | 5 |
+| Definitions | 3 | **0** (target "up to about 3") | 2 | 3 |
+| Code items | 8 | 5 | 8 | 5 |
+| Questions | — | 1 (target 2) | — | 2 |
+| Open points | 0 | 0 | 0 | 0 |
+| Code ok / check / unsupported | 8 / 0 / 0 | 5 / 0 / 0 | 8 / 0 / 0 | 1 / 2 / 2 |
+| References / outside the block | 40 / 0 | 20 / 0 | 47 / 0 | 46 / 0 |
+| Corrections (v4 schema only) | 0 | — | 2, both wrong | — |
+
+English block:
+- v5 stops at S291 (0:40:30): nothing from the last third of the block. The Mad Libs part
+  (S301-S327: the game, `wordBlanks(noun, adjective, verb, adverb)`, `result += ...`) is in v4
+  and missing from v5's outline, concepts and code.
+- v5 has no definitions; v4 has 3, close to the wording ("strings are immutable, meaning they
+  cannot be altered once created", S275; the Mad Libs game, S301-S302).
+- Code: all 13 items of both versions are right and in code form (`firstName[firstName.length
+  - 1]`, `myString += adjective`); v5 just has fewer. No prose written as code.
+
+Italian block:
+- v4 lists terms as code: `loss function` (S135), `Adam` (S151), `relu` (S223), `torch.Tensor`;
+  the code check calls them `ok` because the words were said (it cannot tell a term from code).
+  It still makes corrections, both wrong: "TEC" → "tensor" (S186) and "pescchiamo" →
+  "peschiamo" (S88 already says "peschiamo"). The v5 schema has no corrections field.
+- v4 writes `torch.nn.Linear` for "Da PyTorch.neuralNetwork peschiamo la classe Linear" (S88),
+  an acceptance case, and `pyplot.scatter` (S65). v5 loses both.
+- v5 rebuilds code from descriptions, the failure of prompt v3: `Linear(in_features=1,
+  out_features=1)` (S98-S101 say only "quanti input... Solo 1"), `loss_function =
+  MeanSquaredError()` (S139: "l'errore quadratico medio"; the class name is invented),
+  `optimizer = Adam(params, lr=0.01)` (S158-S159 describe it in words), `for epoch in
+  range(1000):` (S163: "un ciclo di mille ripetizioni"). The code check flags 4 of these 5
+  (`unsupported` 2, `check` 2); only `tensor.unsqueeze(1)` (S113) is said.
+- v5's concepts and definitions are good and richer (the seed, S123-S129; the mean squared
+  error, S139; the learning rate, S156-S157); the definition term "Error quadratico medio" has
+  a typo. Questions: 2, answerable from the cited lines.
+- Neither finds `detach`, as expected.
+
+Likely causes (not tested one by one):
+1. Section lines: definitions (min 0 in Studio) are rendered "Up to about 3 items; empty if
+   there are none", which the model took as optional: 0 in English. v4 asked "about 4
+   definitions" in a rule.
+2. Studio's examples instruction says "and worked examples": an invitation to build examples,
+   which in Italian came out as code rebuilt from descriptions.
+3. The code rule was compressed into one paragraph and lost v4's "If a name is not clear,
+   leave the item out or add an open point".
+4. Targets come from the speech (12-13 minutes) rather than the block's 15 minutes: one item
+   fewer per section than v4.
+5. Coverage: no rule asks to cover the whole part; v5 (with summary and questions to write)
+   stopped early in English.
+
+Estimates (point 4 of the request):
+- The 22-34 s per block of 2026-11-09 are confirmed (18.6-32.2 s). "About 8-10 minutes for the
+  3 h lecture" counted the map only: 15 blocks take about 6.7 minutes.
+- `estimate.py` said about 25 minutes because of an assumption of mine with no measurement
+  behind it (2,500 output tokens per block, commented as if measured; the real answers are
+  860-1,518), a slower generation (45 instead of 51-52 tokens/s) and fixed reduce sizes.
+  Corrected (commit 162c60b): every answer is sized from the template's targets at 65 tokens
+  per item (measured 55-69), 50 tokens/s, 1,850 tokens/s of prefill, 3.7 characters per token.
+  New estimate: it 2 maps + 1 reduce, about 2 minutes; en 15 maps (6.7 min), 2 partial reduces
+  and the final one, about 19 minutes. Reduce requests are still not measured.
+- **Risk found by the corrected estimate:** with Studio's whole-lecture maxima (30 topics, 40
+  concepts, 30 definitions, 50 code items, 20 questions) the 3 h final reduce would write about
+  12,000 tokens and each partial reduce about 9,300, above the 8,192 output cap. `Truncated`
+  would ask again with 16,384, which does not fit the 32k context with a 19k-token input, so the
+  generation would stop. To be decided before piece 3 (see the recommendation).
