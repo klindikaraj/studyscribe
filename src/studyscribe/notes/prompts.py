@@ -24,7 +24,10 @@ from studyscribe.notes.transcript import Line, format_lines
 from studyscribe.transcribe.export import clock
 
 # v1-v4: the probe's drafts (scripts/llm_probe.py). v5: v4 without corrections (2026-11-16).
-PROMPT_VERSION = "v5"
+# v5.1 (2026-11-16, after the v4/v5 probe): "about N" for every section but the open points,
+# v4's code rule in bullets, a rule against prose as code, an explicit no-fix rule, coverage of
+# the whole part.
+PROMPT_VERSION = "v5.1"
 PROMPT_FILES = ("map.md", "code-rule.md", "reduce.md")
 LANGUAGE_NAMES = {"en": "English", "it": "Italian", "fr": "French", "de": "German",
                   "es": "Spanish", "pt": "Portuguese"}
@@ -49,12 +52,21 @@ def map_prompt(template: Template, lines: Sequence[Line], *, part: int, parts: i
                targets: Mapping[str, int], title: str, course: str | None,
                language: str) -> Prompt:
     examples = _first_of_kind(template, "examples")
-    code_rule = _file("code-rule.md").format(key=examples.key) if examples else ""
+    unclear = _unclear(template)
+    code_rule = (_file("code-rule.md").format(key=examples.key, unclear=unclear,
+                                              concept_keys=_concept_keys(template))
+                 if examples else "")
+    outline = _first_of_kind(template, "outline")
+    coverage = (f'every subject the lecturer talks about gets a topic in "{outline.key}"'
+                if outline else "the notes take in every subject the lecturer talks about")
+    open_points = _first_of_kind(template, "open_points")
+    unclear_quote = (f'add an item to "{open_points.key}" that quotes it' if open_points
+                     else "leave it as it is")
     system = _file("map.md").format(
         lecture=lecture_line(title, course), part=part, parts=parts,
         start=clock(lines[0].start_ms), end=clock(lines[-1].end_ms),
-        first=lines[0].label, last=lines[-1].label, unclear=_unclear(template),
-        language=language_name(language), code_rule=code_rule,
+        first=lines[0].label, last=lines[-1].label, unclear=unclear, coverage=coverage,
+        unclear_quote=unclear_quote, language=language_name(language), code_rule=code_rule,
         sections=section_lines(template, targets, scope="this part", all_code=True),
         schema=schema_text(template))
     return Prompt(system=system, user=format_lines(lines))
@@ -98,9 +110,9 @@ def _section_line(section: Section, target: int, scope: str, all_code: bool) -> 
     if section.kind == "summary":
         return f"{text} About {_count(max(1, target), 'sentence')} on {scope}, without refs."
     if section.kind == "examples" and all_code:
-        return f"{text} Every one the lecturer says; empty if there are none."
-    if section.min == 0:
-        return f"{text} Up to about {_count(max(1, target), 'item')}; empty if there are none."
+        return f"{text} Every one the lecturer reads aloud or names; empty if there are none."
+    if section.kind == "open_points" or target == 0:
+        return f"{text} Only if there are any; up to about {_count(max(1, target), 'item')}."
     return f"{text} About {_count(target, 'item')}."
 
 
@@ -128,6 +140,11 @@ def _unclear(template: Template) -> str:
     open_points = _first_of_kind(template, "open_points")
     return (f'add an item to "{open_points.key}"' if open_points
             else "leave it out")
+
+
+def _concept_keys(template: Template) -> str:
+    keys = [f'"{s.key}"' for s in template.sections if s.kind in ("concepts", "definitions")]
+    return " or ".join(keys) if keys else "the other sections"
 
 
 def _first_of_kind(template: Template, kind: str) -> Section | None:

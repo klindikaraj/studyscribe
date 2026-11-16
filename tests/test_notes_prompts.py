@@ -30,9 +30,10 @@ def test_map_prompt_has_lecture_part_range_language_sections_and_schema():
     assert 'goes into\n  "examples"' in system
     assert '- "summary": ' in system and "About 3 sentences on this part, without refs." in system
     assert '- "concepts": ' in system and "About 5 items." in system
-    assert '- "open_points": ' in system and "Up to about 1 item; empty if there are none." \
+    assert '- "open_points": ' in system and "Only if there are any; up to about 1 item." \
         in system
-    assert "Every one the lecturer says; empty if there are none." in system  # code: no cap
+    assert "Every one the lecturer reads aloud or names; empty if there are none." in system
+    assert system.split('- "definitions": ')[1].splitlines()[0].endswith("About 3 items.")
     assert 'add an item to "open_points"' in system
     assert system.endswith(schema_text(STUDIO) + "\n")
     assert prompt.user == "[0:12:34]\nS41 So var is one of them.\nS42 Then let our name " \
@@ -45,6 +46,17 @@ def test_map_prompt_has_no_corrections_no_example_and_no_acceptance_cases():
                  "bush", "push", "scores"):
         assert not re.search(rf"\b{word}\b", system), word
     assert "keep the transcript's words" in system
+
+
+def test_map_prompt_v5_1_rules():
+    system = studio_map().system
+    assert "Cover the whole part, from S41 to S42: every subject the lecturer talks about " \
+           'gets a topic in "outline", the last minutes included.' in system
+    assert "Never fix a word you think was misheard" in system
+    assert 'you add an item to "open_points" that quotes it' in system
+    assert 'goes into "concepts" or "definitions", even when a library has something' in system
+    assert 'leave the\n    item out or add an item to "open_points";' in system
+    assert "worked examples" not in system
 
 
 def test_map_prompt_without_course_in_italian_and_without_code_or_open_points():
@@ -72,7 +84,8 @@ def test_reduce_prompt_final_and_partial():
     assert '"summary" is written anew from the summaries in the input: the thread of the ' \
            'whole lecture' in final.system
     assert "About 5 sentences on the whole lecture" in final.system
-    assert '"examples": ' in final.system and "Up to about 10 items" in final.system
+    examples_line = final.system.split('- "examples": ')[1].splitlines()[0]
+    assert examples_line.endswith("About 10 items.")
     data = json.loads(final.user)
     assert data[1] == {"part": 2, "from": "0:12:34", "to": "0:25:00",
                        "notes": {"summary": "Part two, è così.", "outline": []}}
