@@ -32,11 +32,13 @@ section C: 3 h recording) passed on 2026-10-30. Step 2 (plan and findings:
 2026-11-02 (`docs/manual-test-transcription.md`, section C), and the Italian check (section D)
 passed too. Step 3 is in progress (plan and findings: `docs/plan-notes.md`): piece 1 (cloud
 providers) and 1b (Ollama, default `qwen3.5:9b`, thinking off) done; piece 2 (pipeline, no
-database) in progress. Code read aloud is written in code form (`PyTorch.neuralNetwork` ->
-`torch.nn`, "ipsilon pred" -> `y_pred`); code names not found in the transcript get a warning,
-never a drop. Known limit: recognition errors are not corrected automatically ("TEC" stays
-"TEC", not `detach`): a correction pass failed with thinking off and on (2026-11-16). Instead,
-the words Whisper was unsure about are listed in a "Words to check by listening" appendix.
+database) done offline, map prompt v5.1 frozen until the piece 5 acceptance. Code read aloud
+is written in code form ("ipsilon pred" -> `y_pred`); library names stay as heard
+("PyTorch.neuralNetwork" is not turned into `torch.nn`); code names not found in the transcript
+get a warning, never a drop. Known limit: recognition errors are not corrected automatically
+("TEC" stays "TEC", not `detach`): a correction pass failed with thinking off and on
+(2026-11-16). Instead, the words Whisper was unsure about are listed in a "Words to check by
+listening" appendix.
 
 ## Architecture principles
 
