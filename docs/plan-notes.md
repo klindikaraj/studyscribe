@@ -815,6 +815,65 @@ every word:
   `torch.nn.Linear`).
 - The threshold is tuned on the only known error; how many real errors it misses is unknown.
 
+Correction pass, probe (Claude, 2026-11-16; Ollama 0.40.16, qwen3.5:9b, all on the GPU). One
+request per lecture, before the map: the candidate words (probability < 0.4, 3+ letters, at most
+twice in the lecture; same lists as the analysis above) marked `[[word]]` in excerpts of ±2
+lines, and for every one a `keep`/`fix` verdict with a reason (`llm_probe.py --corrections`).
+Automatic checks: the verdict's line has a marked word, `heard` is that word, a fix differs from
+it and is at most three words. The session titles in the test data say nothing about the topic
+("Lezione italiano", "3 h test").
+
+Expected verdicts, from the transcript's context (Claude's reading; not checked against the
+audio):
+
+| Lecture | Line | Word | Expected |
+|---|---|---|---|
+| it | S152 | Adam | right (the optimiser) |
+| it | S173 | significa | right |
+| it | S186 | TEC | error: `detach` ("stacchiamoli col metodo di TEC") |
+| en | S69 | keyboard | error, certain: "keyword" (S70: "keyword var stands for variable") |
+| en | S75 | left | error, certain: `let` ("So I can say let our name") |
+| en | S103 | known | probably an error ("it's known as seven"), intended word uncertain: keep |
+| en | S406 | stems | probably an error (the exercise array, likely "Stimpson"), not decidable: keep |
+| en | S719 | Holland | probably an error (likely "Hole-in-one"), not decidable: keep |
+| en | S759 | indent | right |
+| en | S849 | team | error, almost certain: "statement" ("use the switch team") |
+| en | S863 | jack | right (10, jack, queen, king) |
+| en | S941 | Adam | right (the value returned for "alpha") |
+| en | S1323 | left | error, certain: `let` (S1321: "use let instead of var") |
+| en | S1365 | frozen | right ("Now I frozen math constants", after `Object.freeze`) |
+
+So the English list is not "almost all right": 4 certain or almost certain errors, 3 probable
+errors that the context cannot settle, 4 right words. A false positive is a fix of a right word
+or a fix with a wrong written form.
+
+| | it, effort none | it, effort high | en, effort none | en, effort high |
+|---|---|---|---|---|
+| Time | 3.9 s | 267 s | 18.2 s | about 5.5 min (from the output file's times), then `Truncated` |
+| Input / output tokens | 932 / 169 | 930 / 13,499 | 2,066 / 881 | not printed / 16,384 (the cap) |
+| Thinking tokens | 0 | 12,658 | 0 | 15,513, still thinking at the cap |
+| Fixes proposed / passing the checks | 1 / 1 | 0 / 0 | 8 / 8 | no answer |
+| Right fixes | 0 | 0 | 3: keyboard → keyword, left → let (twice) | |
+| Wrong fixes (false positives) | 1: TEC → `drop` | 0 | 5: Adam → alpha, frozen → freeze (right words changed), stems → "j cat", Holland → "one", team → "teams" | |
+| Kept | Adam, significa | Adam, significa, **TEC** ("likely a specific method acronym") | indent, jack, known (cited as S102: rejected by the check, so kept) | |
+
+- Effort none is deterministic (the second run gave the same answers) but unreliable: 6 false
+  positives out of 9 fixes in the two lectures, and "TEC" became `drop`.
+- Effort high does not find `detach` either: on the Italian lecture it keeps everything (no
+  false positive, no fix) after 12.7k thinking tokens for three words; on the English one it
+  had not finished after 15.5k thinking tokens. The map with prompt v2 and thinking on had
+  found "di TEC" → `.detach()` once (2026-11-10), with the whole 15-minute block as context: one
+  run, not repeated, so it is unknown whether the wider context or chance made the difference.
+- The automatic checks caught one malformed answer (a wrong line number) and none of the six
+  wrong fixes: those are plausible words in the right place. Telling them apart needs the
+  audio or a stronger model.
+- The candidate selection alone is a useful signal: in English 7 of the 11 words are probably
+  recognition errors; in Italian it contains "TEC".
+
+Decision (per the rule agreed with the user on 2026-11-16): the correction pass fails with
+effort none and with effort high, so automatic corrections of recognition errors stay out of
+step 3 and are a known limit. Writing code read aloud in code form (map prompt v4) stays.
+
 Changes after the first block results (2026-11-10): prompt v2 in the probe (explicit code and correction
 rules, a made-up example that avoids the acceptance cases, S-numbers only in refs), an output
 cap of 16384 with thinking on, `--expect WORD` to find a word in the notes, and a check for
