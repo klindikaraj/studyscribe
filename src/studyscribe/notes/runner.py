@@ -100,6 +100,7 @@ class Prepared:
     speech_ms: int
     estimate: Estimate
     request: NotesRequest
+    speeds: tuple[float, float]  # (prefill, generation) tokens/s for the time estimate
 
     @property
     def lecture(self) -> Lecture:
@@ -181,10 +182,10 @@ def prepare(conn: sqlite3.Connection, session_id: str, request: NotesRequest,
         course = row["title"] if row else None
     title = session["title"] or session_id
     lecture = Lecture(title, course, language)
-    estimate = _estimate(template, blocks, lecture, request,
-                         assumptions or _assumptions(conn, request))
+    a = assumptions or _assumptions(conn, request)
+    estimate = _estimate(template, blocks, lecture, request, a)
     return Prepared(session_id, title, course, run["id"], lines, blocks, template, language,
-                    source, speech, estimate, request)
+                    source, speech, estimate, request, (a.prefill_tps, a.generate_tps))
 
 
 def check_provider(provider: LlmProvider, request: NotesRequest) -> str:

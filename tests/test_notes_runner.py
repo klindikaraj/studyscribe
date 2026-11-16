@@ -7,7 +7,6 @@ import pytest
 from fakes import FakeLlm, echo_notes
 
 from studyscribe.db import repo
-from studyscribe.db.connection import transaction
 from studyscribe.notes.providers.base import BadRequest
 from studyscribe.notes.runner import (
     CannotGenerate,
@@ -23,29 +22,6 @@ from studyscribe.notes.templates import TemplateError, builtin_template, parse_t
 from studyscribe.session import NOTES_LOCK_BYTE, session_lock
 
 REQUEST = NotesRequest(provider="ollama", model="fake-1", effort="none", num_ctx=32768)
-
-
-@pytest.fixture
-def transcribed(db, start_session):
-    """A session with a done transcript: one 9.5 s line every 10 s for `minutes`."""
-    def make(minutes=24, language="it", title="Lezione"):
-        sid = start_session(title, course="PyTorch")
-        with transaction(db):
-            run_id = repo.create_run(db, sid, "fake", "fake-model", "none", "{}",
-                                     minutes * 60_000)
-            repo.set_run_language(db, run_id, language, "detected", None)
-            rows = []
-            for n in range(minutes * 6):
-                start = n * 10_000
-                text = "stacchiamoli col metodo di TEC" if n == 4 else f"frase {n}"
-                words = [[start, start + 500, f" {w}", 0.35 if w == "TEC" else 0.95]
-                         for w in text.split()]
-                rows.append((start, start + 9_500, text, json.dumps(words), -0.2, 0.01, 1.2,
-                             None))
-            repo.add_transcript_window(db, run_id, rows, minutes * 60_000, 1.0)
-            repo.finish_run(db, run_id)
-        return sid
-    return make
 
 
 def generate(db, data_dir, sid, responder=echo_notes, request=REQUEST, **kwargs):

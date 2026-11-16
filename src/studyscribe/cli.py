@@ -1,4 +1,5 @@
-"""Command-line entry point: record, transcribe, export, sessions, recover, config."""
+"""Command-line entry point: record, transcribe, notes, export, sessions, recover, template,
+config."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
 
-from studyscribe import __version__
+from studyscribe import __version__, cli_notes
 from studyscribe.audio.capture import CaptureConfig
 from studyscribe.config import (
     DATA_DIR_ENV,
@@ -41,6 +42,7 @@ from studyscribe.recovery import (
     Recovered,
     RecoveredRun,
     recover_all,
+    recover_notes,
     recover_session,
     recover_transcriptions,
 )
@@ -106,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
                             help="start from scratch instead of resuming an interrupted run")
     transcribe.add_argument("--hints", metavar="TEXT",
                             help="words to expect (title, technical terms), passed to the model")
+    transcribe.add_argument("--notes", action="store_true",
+                            help="then write the notes (Whisper's GPU memory is freed first); "
+                            "the notes options below apply")
+    cli_notes.add_notes_options(transcribe, in_transcribe=True)
     export_parser = commands.add_parser(
         "export",
         help="write the transcript files of a session (exports/ in its folder)",
@@ -116,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("session_id", metavar="SESSION_ID")
     export_parser.add_argument("--audio", action="store_true",
                                help="also write audio.flac (the whole recording, lossless)")
+    cli_notes.add_commands(commands)
     commands.add_parser(
         "sessions",
         help="list the sessions with status and duration",
@@ -145,7 +152,9 @@ def build_parser() -> argparse.ArgumentParser:
     delete_key = config_actions.add_parser("delete-key", help="remove a stored API key")
     delete_key.add_argument("provider", choices=KEY_PROVIDERS)
     config_actions.add_parser(
-        "show", help="Ollama's state and where each cloud provider's key comes from (masked)")
+        "show", help="settings, Ollama's state and where each cloud provider's key comes from "
+        "(masked)")
+    cli_notes.add_config_set(config_actions)
     return parser
 
 
@@ -160,18 +169,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
-    if args.command == "config":
+    if args.command == "config" and args.config_action in ("set-key", "delete-key"):
         return cmd_config(args, sys.stdout)
-    with closing(open_database(db_path(data_dir))) as conn:
+    with closing(open_database(db_path(data_dir), on_backup=_backup_note)) as conn:
+        if args.command == "config":
+            if args.config_action == "set":
+                return cli_notes.config_set(conn, args, sys.stdout)
+            return cmd_config(args, sys.stdout, settings=cli_notes.settings_lines(conn))
         if args.command == "record":
             return cmd_record(conn, data_dir, args, sys.stdout)
         if args.command == "transcribe":
             return cmd_transcribe(conn, data_dir, args, sys.stdout)
+        if args.command == "notes":
+            return cmd_notes(conn, data_dir, args, sys.stdout)
+        if args.command == "template":
+            return cli_notes.cmd_template(conn, args, sys.stdout)
         if args.command == "export":
             return cmd_export(conn, data_dir, args, sys.stdout)
         if args.command == "sessions":
             return cmd_sessions(conn, data_dir, sys.stdout)
         return cmd_recover(conn, data_dir, sys.stdout)
+
+
+def _backup_note(path: Path) -> None:
+    print(f"Database backed up before updating its schema: {path}")
 
 
 # --- commands ----------------------------------------------------------------------------------
@@ -190,8 +211,7 @@ def cmd_record(
 
     `capture_options` override CaptureConfig fields (tests pass fake sources).
     """
-    print_recovery(recover_all(conn, data_dir), out, quiet=True)
-    print_run_recovery(recover_transcriptions(conn, data_dir), out)
+    _recover_everything(conn, data_dir, out)
     session_id, owner_lock = new_session(conn, data_dir, args.title, args.course)
     try:
         print(f"Session {session_id}\nFolder: {session_dir(data_dir, session_id)}", file=out)
@@ -219,15 +239,22 @@ def cmd_record(
     return 0 if summary["status"] == "recorded" else 1
 
 
-def cmd_sessions(conn: sqlite3.Connection, data_dir: Path, out: TextIO) -> int:
+def _recover_everything(conn: sqlite3.Connection, data_dir: Path, out: TextIO) -> None:
     print_recovery(recover_all(conn, data_dir), out, quiet=True)
     print_run_recovery(recover_transcriptions(conn, data_dir), out)
+    cli_notes.print_notes_recovery(recover_notes(conn, data_dir), out)
+
+
+def cmd_sessions(conn: sqlite3.Connection, data_dir: Path, out: TextIO) -> int:
+    _recover_everything(conn, data_dir, out)
     rows = repo.list_session_summaries(conn)
     if not rows:
         print("No sessions yet.", file=out)
         return 0
     transcripts = repo.transcript_states(conn)
-    table = [("SESSION", "STATUS", "STARTED", "DURATION", "GAP", "TRANSCRIPT", "COURSE", "TITLE")]
+    notes = repo.notes_states(conn)
+    table = [("SESSION", "STATUS", "STARTED", "DURATION", "GAP", "TRANSCRIPT", "NOTES", "COURSE",
+              "TITLE")]
     for row in rows:
         table.append(
             (
@@ -237,6 +264,7 @@ def cmd_sessions(conn: sqlite3.Connection, data_dir: Path, out: TextIO) -> int:
                 format_duration(row["duration_ms"]),
                 f"{row['gap_ms'] / 1000:.1f} s" if row["gap_ms"] else "-",
                 transcripts.get(row["id"], "-"),
+                notes.get(row["id"], "-"),
                 row["course"] or "-",
                 row["title"] or "-",
             )
@@ -252,8 +280,10 @@ def cmd_sessions(conn: sqlite3.Connection, data_dir: Path, out: TextIO) -> int:
 def cmd_recover(conn: sqlite3.Connection, data_dir: Path, out: TextIO) -> int:
     results = recover_all(conn, data_dir)
     runs = recover_transcriptions(conn, data_dir)
-    print_recovery(results, out, quiet=bool(runs))
+    notes = recover_notes(conn, data_dir)
+    print_recovery(results, out, quiet=bool(runs or notes))
     print_run_recovery(runs, out)
+    cli_notes.print_notes_recovery(notes, out)
     return 0
 
 
@@ -263,18 +293,19 @@ def cmd_transcribe(
     args: argparse.Namespace,
     out: TextIO,
     load: Callable[[], Transcriber] | None = None,
+    notes_options: dict[str, Any] | None = None,
     **options: Any,
 ) -> int:
-    """Transcribe a session; 0 when its transcript is complete.
+    """Transcribe a session; 0 when its transcript is complete (and, with --notes, its notes).
 
-    `load` and `options` (passed to transcribe_session) let tests use a fake engine.
+    `load` and `options` (passed to transcribe_session) let tests use a fake engine;
+    `notes_options` are passed to the notes command (fake provider).
     """
     language = args.language.lower()
     if language != "auto" and not _known_language(language):
         print(f"Unknown language code {args.language!r} (e.g. en, it, or auto).", file=out)
         return 2
-    print_recovery(recover_all(conn, data_dir), out, quiet=True)
-    print_run_recovery(recover_transcriptions(conn, data_dir), out)
+    _recover_everything(conn, data_dir, out)
     if load is None:
         load = functools.partial(_load_whisper, args, out)
     progress = TranscribeProgress(out)
@@ -313,7 +344,20 @@ def cmd_transcribe(
     else:
         timing = f"{total} in {format_duration(progress.elapsed_ms())} ({speed:.0f}x real time)"
     print(f"Done: {timing}, {result.kept} segments kept, {result.dropped} dropped", file=out)
-    return _write_exports(conn, data_dir, args.session_id, out, audio=False)
+    code = _write_exports(conn, data_dir, args.session_id, out, audio=False)
+    if code != 0 or not getattr(args, "notes", False):
+        return code
+    print("Whisper's GPU memory is released; now the notes.", file=out)
+    return cmd_notes(conn, data_dir, args, out, **(notes_options or {}))
+
+
+def cmd_notes(conn: sqlite3.Connection, data_dir: Path, args: argparse.Namespace, out: TextIO,
+              **options: Any) -> int:
+    """`notes`: recovery first, then the generation (see cli_notes). `options` (make,
+    confirm, find_key) let tests run without a provider."""
+    if args.command == "notes":
+        _recover_everything(conn, data_dir, out)
+    return cli_notes.cmd_notes(conn, data_dir, args, out, **options)
 
 
 def cmd_export(conn: sqlite3.Connection, data_dir: Path, args: argparse.Namespace,
@@ -345,12 +389,15 @@ def cmd_config(args: argparse.Namespace, out: TextIO, *, store: keys.KeyStore | 
                environ: Mapping[str, str] | None = None,
                read_secret: Callable[[str], str] | None = None,
                make: Callable[[str, str | None, str], LlmProvider] = make_provider,
-               ollama_status: Callable[[], list[str]] | None = None) -> int:
+               ollama_status: Callable[[], list[str]] | None = None,
+               settings: list[str] | None = None) -> int:
     """Providers and API keys. `store`, `environ`, `read_secret`, `make` and `ollama_status` let
     tests run without the real credential store, console, network or Ollama."""
     environ = os.environ if environ is None else environ
     try:
         if args.config_action == "show":
+            for line in settings or []:
+                print(line, file=out)
             return _config_show(out, store, environ, ollama_status or _ollama_status)
         if args.config_action == "delete-key":
             if keys.delete_key(args.provider, store=store):
