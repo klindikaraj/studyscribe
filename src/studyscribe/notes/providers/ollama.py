@@ -395,7 +395,8 @@ class OllamaProvider:
     def generate(self, request: LlmRequest) -> LlmResponse:
         info = self.model_info()
         think = think_value(request.effort, info)
-        self.check_fits(request.system, request.user, request.max_output_tokens)
+        self.check_fits(request.system, request.user, request.max_output_tokens,
+                        counted=request.input_tokens)
         self.ensure_loaded()
         body: dict[str, Any] = {
             "model": self.model,
@@ -495,12 +496,16 @@ class OllamaProvider:
     def estimate_tokens(self, system: str, user: str) -> int:
         return math.ceil((len(system) + len(user)) / self.options.chars_per_token_min) + 16
 
-    def check_fits(self, system: str, user: str, max_output_tokens: int) -> None:
-        estimate = self.estimate_tokens(system, user)
+    def check_fits(self, system: str, user: str, max_output_tokens: int, *,
+                   counted: int | None = None) -> None:
+        """Guard 1: refuse before sending. `counted`: the exact input tokens, when the caller
+        counted them; otherwise a conservative estimate from the characters."""
+        estimate = counted if counted is not None else self.estimate_tokens(system, user)
         budget = self.budget(max_output_tokens)
         if estimate > budget:
+            how = "" if counted is not None else "about "
             raise ContextTooLong(
-                f"The request (about {estimate:,} tokens) does not fit the context: "
+                f"The request ({how}{estimate:,} tokens) does not fit the context: "
                 f"{self.options.num_ctx:,} tokens minus {max_output_tokens:,} for the answer. "
                 "Nothing was sent.",
                 remedy="This is a bug in how the notes are split; please report it.")

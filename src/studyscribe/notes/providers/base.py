@@ -29,6 +29,9 @@ class LlmRequest:
     schema: dict  # JSON schema of the expected output (e.g. Model.model_json_schema())
     max_output_tokens: int
     effort: Effort = "medium"
+    # Exact input tokens when the caller counted them (count_tokens); a provider that guards
+    # its context uses this instead of its own estimate from the characters.
+    input_tokens: int | None = None
 
 
 @dataclass(frozen=True)

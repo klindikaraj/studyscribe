@@ -314,6 +314,19 @@ def test_request_that_cannot_fit_is_not_sent(fake):
     assert fake.chats() == [] and not fake.loaded
 
 
+def test_a_counted_request_is_checked_with_its_exact_tokens(fake):
+    provider = provider_for(fake, num_ctx=4096)
+    long_user = "S1 " + "word " * 1200  # 6k characters: about 2.4k tokens at 2.5 chars/token
+    with pytest.raises(ContextTooLong, match="Nothing was sent"):
+        provider.generate(LlmRequest("sys", long_user, SCHEMA, 2000))
+    with pytest.raises(ContextTooLong, match=r"The request \(2,000 tokens\)"):
+        provider.generate(LlmRequest("sys", long_user, SCHEMA, 2000, input_tokens=2000))
+    assert fake.chats() == []
+    fake.answers = [("stream", [content('{"topic": "x"}'), final_chunk(prompt=1300, out=5)])]
+    provider.generate(LlmRequest("sys", long_user, SCHEMA, 2000, input_tokens=1300))
+    assert len(fake.chats()) == 1
+
+
 def test_server_refusal_of_a_long_prompt_is_context_too_long(fake):
     fake.answers = [(400, {"error": "request (40141 tokens) exceeds the available context "
                                     "size (32768 tokens), try increasing it"})]
