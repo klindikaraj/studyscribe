@@ -32,7 +32,7 @@ import re
 import shutil
 import socket
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -106,11 +106,18 @@ class GpuMemoryShort(LlmError):
     """The model does not fit (entirely) in GPU memory."""
 
 
-def gpu_remedy(num_ctx: int) -> str:
-    smaller_ctx = max(MIN_NUM_CTX, num_ctx // 2)
-    return ("Close apps that use the GPU (games, video editors, browsers with hardware "
-            f"acceleration), or use a smaller model ({SMALLER_MODEL}) or a smaller context "
-            f"({smaller_ctx} tokens instead of {num_ctx}); --allow-cpu runs it anyway, slowly.")
+def gpu_remedy(held_by_ollama: Sequence[str] = ()) -> str:
+    """What to do when GPU memory is short. Never a smaller context: the notes refuse less
+    than 32,768 tokens (2026-11-16, user's manual test)."""
+    text = ("Close apps that use the GPU (games, video editors, browsers with hardware "
+            f"acceleration), or use a smaller model (--model {SMALLER_MODEL}); --allow-cpu runs "
+            "it anyway, slowly.")
+    if held_by_ollama:
+        names = ", ".join(held_by_ollama)
+        text += (f" Ollama still holds {names}: wait until it unloads (up to "
+                 f"{DEFAULT_KEEP_ALIVE} after its last use) or run `ollama stop "
+                 f"{held_by_ollama[0]}`.")
+    return text
 
 
 # --- configuration -------------------------------------------------------------------------------
@@ -320,7 +327,7 @@ def map_error(status: int | None, message: str, model: str, num_ctx: int) -> Llm
     if any(s in low for s in ("out of memory", "cudamalloc", "insufficient memory",
                               "requires more system memory", "unable to allocate")):
         return GpuMemoryShort(f"Not enough memory to load {model}: {message}",
-                              remedy=gpu_remedy(num_ctx), status=status)
+                              remedy=gpu_remedy(), status=status)
     text = f"Ollama error {status}: {message}" if status else f"Ollama error: {message}"
     if status is None or status >= 500:
         return ServerError(text, status=status,
@@ -371,10 +378,14 @@ class OllamaProvider:
     def __init__(self, model: str, options: OllamaOptions | None = None, *,
                  on_progress: Callable[[int, float], None] | None = None,
                  find_exe: Callable[[], Path | None] = find_ollama_exe,
-                 gpu_query: Callable[[], gpu.GpuMemory | None] = gpu.query) -> None:
+                 gpu_query: Callable[[], gpu.GpuMemory | None] = gpu.query,
+                 on_notice: Callable[[str], None] | None = None) -> None:
         self.model = model
         self.options = options or OllamaOptions()
         self.on_progress = on_progress  # (chunks received, seconds) while an answer streams
+        # Told about what loading does with models Ollama already holds; kept in `notices`.
+        self.on_notice = on_notice
+        self.notices: list[str] = []
         self._find_exe = find_exe
         self._gpu_query = gpu_query
         url = urlsplit(self.options.host)
@@ -528,13 +539,23 @@ class OllamaProvider:
         self.model_info()
         before = self._gpu_query()
         need = self.vram_needed_bytes()
-        if (before is not None and need is not None and not self.options.allow_cpu
-                and before.free_mib * gpu.MIB < 0.75 * need):
-            raise GpuMemoryShort(
-                f"{self.model} needs about {need / 1e9:.1f} GB of GPU memory with a "
-                f"{self.options.num_ctx:,}-token context; {before.free_mib / 1024:.1f} GB are "
-                f"free ({before.used_mib / 1024:.1f} of {before.total_mib / 1024:.1f} GB in use).",
-                remedy=gpu_remedy(self.options.num_ctx))
+        held = self._held_by_ollama()
+        if held.ready:
+            self._notice(f"{self.model} is already loaded in Ollama with a "
+                         f"{self.options.num_ctx:,}-token context: reused.")
+        else:
+            for line in held.describe(self.model):
+                self._notice(line)
+            free = None if before is None else before.free_mib * gpu.MIB + held.reclaimable
+            if (free is not None and need is not None and not self.options.allow_cpu
+                    and free < 0.75 * need):
+                ollama = (f", {held.reclaimable / 1e9:.1f} GB of them held by Ollama and "
+                          "counted as free" if held.reclaimable else "")
+                raise GpuMemoryShort(
+                    f"{self.model} needs about {need / 1e9:.1f} GB of GPU memory with a "
+                    f"{self.options.num_ctx:,}-token context; {free / 1e9:.1f} GB can be free "
+                    f"({before.used_mib / 1024:.1f} of {before.total_mib / 1024:.1f} GB in "
+                    f"use{ollama}).", remedy=gpu_remedy())
         self._load_attempted = True
         started = time.perf_counter()
         self._json("POST", "/api/chat", {"model": self.model, "messages": [],
@@ -552,17 +573,34 @@ class OllamaProvider:
             load_s=load_s, gpu_before=before, gpu_after=self._gpu_query())
         info = self.load_info
         if not info.on_gpu_entirely and not self.options.allow_cpu:
+            others = [name for name in self._held_by_ollama().names if
+                      _with_tag(name) != _with_tag(self.model)]
             self.close()
             raise GpuMemoryShort(
                 f"{self.model} fits only partly in GPU memory ({info.vram_bytes / 1e9:.1f} of "
                 f"{info.size_bytes / 1e9:.1f} GB): the rest would run on the CPU, many times "
-                "slower.", remedy=gpu_remedy(self.options.num_ctx))
+                "slower.", remedy=gpu_remedy(others))
         if 0 < info.context_length < self.options.num_ctx:
             self.close()
             raise BadRequest(f"Ollama loaded {self.model} with a {info.context_length:,}-token "
                              f"context instead of {self.options.num_ctx:,}.",
-                             remedy="Use a smaller context, or check OLLAMA_CONTEXT_LENGTH.")
+                             remedy="Check OLLAMA_CONTEXT_LENGTH in Ollama's settings: it "
+                             f"must allow {self.options.num_ctx:,} tokens (or be unset); then "
+                             "restart Ollama.")
         return info
+
+    def _held_by_ollama(self) -> HeldByOllama:
+        """What Ollama holds in GPU memory now (`/api/ps`); nothing when it cannot say."""
+        try:
+            running = self.running_models()
+        except LlmError:
+            running = []
+        return HeldByOllama.from_ps(running, self.model, self.options.num_ctx)
+
+    def _notice(self, text: str) -> None:
+        self.notices.append(text)
+        if self.on_notice is not None:
+            self.on_notice(text)
 
     def unload(self) -> None:
         self._json("POST", "/api/chat", {"model": self.model, "messages": [], "keep_alive": 0})
@@ -690,6 +728,43 @@ def _seconds(nanoseconds: Any) -> float:
 
 def _with_tag(model: str) -> str:
     return model if ":" in model else f"{model}:latest"
+
+
+@dataclass(frozen=True)
+class HeldByOllama:
+    """The models Ollama keeps loaded, as `/api/ps` lists them. Their GPU memory is
+    reclaimable: Ollama unloads a model to load another one, or the same one with another
+    context. `ready`: our model is there already, with our context, entirely in GPU memory
+    (after a killed run it stays loaded for keep_alive): nothing to free, nothing to check."""
+
+    ready: bool
+    reclaimable: int  # bytes of GPU memory held by the models that would be unloaded
+    entries: tuple[tuple[str, int, int], ...]  # (name, context length, bytes in GPU memory)
+
+    @property
+    def names(self) -> list[str]:
+        return [name for name, _, _ in self.entries]
+
+    @classmethod
+    def from_ps(cls, running: list[dict[str, Any]], model: str, num_ctx: int) -> HeldByOllama:
+        entries = tuple((str(e.get("name") or e.get("model") or "?"),
+                         int(e.get("context_length") or 0), int(e.get("size_vram") or 0))
+                        for e in running)
+        same = _find_running(running, model)
+        ready = (same is not None and int(same.get("context_length") or 0) == num_ctx
+                 and int(same.get("size_vram") or 0) >= int(same.get("size") or 0) > 0)
+        return cls(ready, 0 if ready else sum(vram for _, _, vram in entries), entries)
+
+    def describe(self, model: str) -> list[str]:
+        lines = []
+        for name, context, vram in self.entries:
+            if _with_tag(name) == _with_tag(model):
+                why = f"with a {context:,}-token context: Ollama reloads it with the new one"
+            else:
+                why = "another model: Ollama unloads it to make room"
+            lines.append(f"Ollama holds {name} ({vram / 1e9:.1f} GB of GPU memory), {why}; "
+                         "that memory is counted as free.")
+        return lines
 
 
 def _find_running(models: list[dict[str, Any]], model: str) -> dict[str, Any] | None:

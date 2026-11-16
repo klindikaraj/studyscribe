@@ -125,6 +125,8 @@ def cmd_notes(conn: sqlite3.Connection, data_dir: Path, args: argparse.Namespace
         return 1
     try:
         provider = _make(request, args, make, find_key)
+        if hasattr(provider, "on_notice"):  # Ollama: what loading does with models it holds
+            provider.on_notice = lambda text: print(f"  {text}", file=out, flush=True)
         print(f"Model check: {check_provider(provider, request)}", file=out)
     except CannotGenerate as exc:
         print(f"Cannot write notes for {args.session_id}: {exc}", file=out)

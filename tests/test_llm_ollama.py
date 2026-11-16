@@ -87,6 +87,7 @@ class FakeOllama:
         self.size_vram = int(5.6 * GB)
         self.context_length = 32768
         self.loaded = False
+        self.others: list[dict] = []  # other models Ollama holds (/api/ps)
 
     def chats(self):
         return [body for method, path, body in self.requests
@@ -107,7 +108,7 @@ class FakeOllama:
             models = [{"name": MODEL, "model": MODEL, "size": self.size,
                        "size_vram": self.size_vram, "digest": DIGEST,
                        "context_length": self.context_length}] if self.loaded else []
-            return send_json(handler, 200, {"models": models})
+            return send_json(handler, 200, {"models": models + self.others})
         if path == "/api/show":
             return send_json(handler, *self.show)
         if path == "/api/chat" and not body.get("messages"):
@@ -116,6 +117,9 @@ class FakeOllama:
                 return send_json(handler, 200, {"done": True, "done_reason": "unload"})
             if self.load_answer is not None:
                 return send_json(handler, *self.load_answer)
+            if not self.loaded or self.context_length != body["options"]["num_ctx"]:
+                self.context_length = body["options"]["num_ctx"]  # (re)loaded with it
+            self.others = []  # Ollama made room
             self.loaded = True
             return send_json(handler, 200, {"done": True, "done_reason": "load"})
         if path == "/api/chat":
@@ -369,7 +373,8 @@ def test_partial_gpu_offload_stops_and_unloads(fake):
     expected = r"only partly in GPU memory \(4.1 of 5.6 GB\)"
     with pytest.raises(GpuMemoryShort, match=expected) as info:
         provider.generate(REQUEST)
-    assert "qwen3.5:4b" in info.value.remedy and "16384 tokens" in info.value.remedy
+    assert "qwen3.5:4b" in info.value.remedy
+    assert "context" not in info.value.remedy and "16384" not in info.value.remedy
     assert fake.requests[-1][2] == {"model": MODEL, "messages": [], "keep_alive": 0}
     assert fake.chats() == []
 
@@ -389,6 +394,61 @@ def test_too_little_free_vram_stops_before_loading(fake):
     assert not any(p == "/api/chat" for _, p, _ in fake.requests)
 
 
+def test_the_same_model_already_loaded_with_the_same_context_is_reused(fake):
+    # after a killed run the model stays loaded (keep_alive): its 5.6 GB are not "used by
+    # others", so the low free memory must not stop the run
+    fake.loaded = True
+    fake.answers = [("stream", [content('{"topic": "x"}'), final_chunk()])]
+    notices = []
+    provider = provider_for(fake, free_mib=1500)
+    provider.on_notice = notices.append
+    provider.generate(REQUEST)
+    assert notices == [f"{MODEL} is already loaded in Ollama with a 32,768-token context: "
+                       "reused."]
+
+
+def test_the_same_model_with_another_context_counts_as_free_memory(fake):
+    fake.loaded, fake.context_length = True, 16384
+    fake.answers = [("stream", [content('{"topic": "x"}'), final_chunk()])]
+    provider = provider_for(fake, free_mib=1500)  # 1.6 GB free + 5.6 GB held by Ollama
+    provider.generate(REQUEST)
+    assert provider.notices == [
+        f"Ollama holds {MODEL} (5.6 GB of GPU memory), with a 16,384-token context: Ollama "
+        "reloads it with the new one; that memory is counted as free."]
+    assert provider.load_info.context_length == 32768
+
+
+def test_another_model_held_by_ollama_counts_as_free_memory(fake):
+    fake.others = [{"name": "gemma4:12b-it-qat", "model": "gemma4:12b-it-qat",
+                    "size": int(8 * GB), "size_vram": int(8 * GB), "context_length": 16384}]
+    fake.answers = [("stream", [content('{"topic": "x"}'), final_chunk()])]
+    provider = provider_for(fake, free_mib=1000)
+    provider.generate(REQUEST)
+    assert provider.notices == [
+        "Ollama holds gemma4:12b-it-qat (8.0 GB of GPU memory), another model: Ollama unloads "
+        "it to make room; that memory is counted as free."]
+
+
+def test_too_little_memory_even_counting_what_ollama_holds(fake):
+    fake.others = [{"name": "tiny:1b", "size": int(0.5 * GB), "size_vram": int(0.5 * GB),
+                    "context_length": 4096}]
+    provider = provider_for(fake, free_mib=1000)
+    with pytest.raises(GpuMemoryShort, match=r"0.5 GB of them held by Ollama and counted as "
+                                             r"free") as info:
+        provider.generate(REQUEST)
+    assert "context" not in info.value.remedy
+    assert not any(p == "/api/chat" for _, p, _ in fake.requests)
+
+
+def test_gpu_remedy_never_suggests_a_smaller_context():
+    from studyscribe.notes.providers.ollama import gpu_remedy
+
+    assert "context" not in gpu_remedy() and "num_ctx" not in gpu_remedy()
+    held = gpu_remedy(["qwen3.5:9b"])
+    assert "wait until it unloads (up to 10m after its last use) or run `ollama stop " \
+           "qwen3.5:9b`" in held
+
+
 def test_out_of_memory_while_loading(fake):
     fake.load_answer = (500, {"error": "llama runner process has terminated: cudaMalloc failed: "
                                        "out of memory"})
@@ -398,8 +458,11 @@ def test_out_of_memory_while_loading(fake):
 
 def test_smaller_context_than_requested_is_refused(fake):
     fake.context_length = 8192
-    with pytest.raises(BadRequest, match="8,192-token context instead of 32,768"):
+    fake.load_answer = (200, {"done": True})
+    fake.loaded = True  # Ollama keeps its own limit whatever we ask
+    with pytest.raises(BadRequest, match="8,192-token context instead of 32,768") as info:
         provider_for(fake).generate(REQUEST)
+    assert "OLLAMA_CONTEXT_LENGTH" in info.value.remedy and "smaller" not in info.value.remedy
     assert not fake.loaded
 
 
