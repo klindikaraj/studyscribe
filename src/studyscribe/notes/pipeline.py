@@ -202,6 +202,7 @@ class _Run:
         self.reports: dict[str, RefReport] = {s: RefReport() for s in ("map", "partial",
                                                                          "reduce")}
         self.requests = 0
+        self.total_speech_ms = 0
 
     # --- stages ----------------------------------------------------------------------------------
 
@@ -252,6 +253,7 @@ class _Run:
 
     def _reduce(self, parts: list[tuple[PartNotes, int]]) -> BaseModel:
         group_number = 0
+        self.total_speech_ms = sum(speech for _, speech in parts)
         for _level in range(self.options.max_levels + 1):
             budget = self._reduce_budget()
             sizes = [self._size(part) for part, _ in parts]
@@ -289,7 +291,8 @@ class _Run:
     def _reduce_request(self, stage: Stage, number: int, inputs: list[PartNotes],
                         speech_ms: int) -> BaseModel:
         final = stage == "reduce"
-        targets = self.template.targets(speech_ms, whole_lecture=final)
+        targets = (self.template.targets(speech_ms, whole_lecture=True) if final
+                   else self.template.partial_targets(speech_ms, self.total_speech_ms))
         prompt = reduce_prompt(self.template, inputs, final=final, targets=targets,
                                title=self.lecture.title, course=self.lecture.course,
                                language=self.lecture.language)
