@@ -50,6 +50,27 @@ def test_the_notes_of_a_session_match_its_srt(check, exported, capsys):
     assert "no audio.flac" in out
 
 
+def test_coverage_and_appendix_links_are_accepted(check, db, data_dir, transcribed, capsys):
+    import json
+
+    from studyscribe.db import repo
+    from studyscribe.db.connection import transaction
+
+    sid = transcribed()
+    notes_id = generate_fake_notes(db, data_dir, sid)
+    stats = {"coverage_warnings": [{"block": 2, "last_cited": 100, "uncovered": [101, 144],
+                                    "start_ms": 1_010_000, "end_ms": 1_430_000}]}
+    with transaction(db):
+        db.execute("UPDATE generated_notes SET stats_json = ? WHERE id = ?",
+                   (json.dumps(stats), notes_id))
+    export.export_text(db, data_dir, sid)
+    folder = export_notes(db, data_dir, sid).folder
+    page = (folder / "notes.html").read_text(encoding="utf-8")
+    assert "potrebbero non coprire" in page and repo.get_notes(db, notes_id) is not None
+    assert check.main([str(folder)]) == 0
+    assert "OK" in capsys.readouterr().out
+
+
 def test_a_time_that_is_not_a_cue_start_is_reported(check, exported, capsys):
     page = exported / "notes.html"
     text = page.read_text(encoding="utf-8")

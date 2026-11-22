@@ -15,7 +15,8 @@ notes' items):
    header; no decoding).
 
 Every other timestamp link (the coverage warning and the appendix, which point to a block or a
-word rather than to a line) is only checked for seeking inside the audio. Exit code 0 when
+word rather than to a line) is only checked for seeking inside the audio, and for its label when
+that is a time. Exit code 0 when
 everything matches, 1 when something does not, 2 on a usage error.
 """
 
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 
+TIME_LABEL = re.compile(r"\d+:\d\d:\d\d")  # a link labelled with a time (not a description)
 SRT_START = re.compile(r"^(\d+):(\d\d):(\d\d),(\d\d\d) --> ", re.MULTILINE)
 
 
@@ -108,7 +110,7 @@ def check_page(links: list[Link], cue_starts: set[int], duration_ms: int | None
             if link.seconds != link.ms // 1000:
                 problems.append(f"{where}: seeks {link.seconds} s but its time is "
                                 f"{link.ms} ms")
-        if link.label != clock(link.seconds):
+        if TIME_LABEL.fullmatch(link.label) and link.label != clock(link.seconds):
             problems.append(f"{where}: the label does not show the {link.seconds} s it seeks")
         if duration_ms is not None and link.seconds * 1000 >= duration_ms:
             problems.append(f"{where}: {link.seconds} s is past the end of the audio "
