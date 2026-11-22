@@ -339,6 +339,14 @@ def get_latest_done_notes(conn: sqlite3.Connection, session_id: str) -> sqlite3.
         " ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
 
 
+def list_done_notes(conn: sqlite3.Connection, session_id: str) -> list[sqlite3.Row]:
+    """The completed generations of a session, oldest first. A generation's version is its
+    position here (from 1): a completed generation never changes, so it never moves."""
+    return conn.execute(
+        "SELECT * FROM generated_notes WHERE session_id = ? AND status = 'done' ORDER BY id",
+        (session_id,)).fetchall()
+
+
 def list_notes_by_status(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM generated_notes WHERE status = ? ORDER BY id",
                         (status,)).fetchall()

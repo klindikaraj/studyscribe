@@ -82,3 +82,20 @@ def test_one_open_generation_per_session(db):
     with pytest.raises(Exception):
         with transaction(db):
             notes(db)
+
+
+def test_done_generations_are_listed_oldest_first_and_only_when_done(db):
+    session(db)
+    session(db, "s2")
+    first = notes(db)
+    repo.finish_notes(db, first, content_json="{}", uncertain_json="[]", stats_json="{}")
+    failed = notes(db)
+    repo.set_notes_status(db, failed, "failed", "discarded")
+    second = notes(db)
+    repo.finish_notes(db, second, content_json="{}", uncertain_json="[]", stats_json="{}")
+    notes(db)  # still running
+    other = notes(db, "s2")
+    repo.finish_notes(db, other, content_json="{}", uncertain_json="[]", stats_json="{}")
+    assert [r["id"] for r in repo.list_done_notes(db, "s1")] == [first, second]
+    assert [r["id"] for r in repo.list_done_notes(db, "s2")] == [other]
+    assert repo.list_done_notes(db, "nope") == []
