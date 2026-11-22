@@ -487,3 +487,17 @@ def targeted_notes(padding: int = 0, *, ignore_targets_for: int = 0, extra: int 
         return json.dumps(data)
 
     return respond
+
+
+def generate_fake_notes(db, data_dir, session_id, responder=None, **request_changes):
+    """Run the real notes pipeline and runner on a session with a done transcript, with a fake
+    LLM (valid Studio notes by default). Returns the generation's id."""
+    from dataclasses import replace
+
+    from studyscribe.notes.runner import NotesRequest, generate_session_notes, prepare
+
+    request = replace(NotesRequest(provider="ollama", model="fake-1", effort="none",
+                                   num_ctx=32768), **request_changes)
+    prepared = prepare(db, session_id, request)
+    return generate_session_notes(db, data_dir, prepared,
+                                  FakeLlm(responder or echo_notes)).notes_id
