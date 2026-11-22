@@ -32,7 +32,9 @@ section C: 3 h recording) passed on 2026-10-30. Step 2 (plan and findings:
 2026-11-02 (`docs/manual-test-transcription.md`, section C), and the Italian check (section D)
 passed too. Step 3 is in progress (plan and findings: `docs/plan-notes.md`): piece 1 (cloud
 providers) and 1b (Ollama, default `qwen3.5:9b`, thinking off) done; piece 2 (pipeline, no
-database) done offline, map prompt v5.1 frozen until the piece 5 acceptance. Code read aloud
+database) done offline, map prompt v5.1 frozen until the piece 5 acceptance; piece 3 (database
+v3, CLI) done; piece 4 (exports `notes.md` / `notes.html`, 2026-11-22) done, the user's browser
+check pending (`docs/manual-test-notes.md`). Code read aloud
 is written in code form ("ipsilon pred" -> `y_pred`); library names stay as heard
 ("PyTorch.neuralNetwork" is not turned into `torch.nn`); code names not found in the transcript
 get a warning, never a drop. Known limit: recognition errors are not corrected automatically
@@ -153,15 +155,24 @@ src/studyscribe/
   transcribe/pipeline.py  detect_language, transcribe_windows (no database)
   transcribe/runner.py    transcribe_session: checks, lock, run lifecycle, resume (database)
   transcribe/export.py    srt / md / dropped list / audio.flac
+  notes/                  the notes (step 3), modules listed in docs/plan-notes.md; the exports:
+    doc.py                a generation read for rendering: versions, same-transcript check, audio
+    labels.py             fixed texts around the notes, en/it
+    render_common.py      warnings, appendix rows, footer shared by both renderers
+    render_md.py          notes.md (escaped text, fenced code, <details> answers)
+    render_html.py        notes.html (inline style/script from resources/export, CSP by hash)
+    export.py             writes notes.md / notes.html (or notes-vN.*) atomically; never audio.flac
 tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
 scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --session "Title",
                            --recover, --silence-limit SECONDS
 scripts/manual_recording_test.py   guided manual test: media key for play/pause/resume (or
                            --manual), unplug/replug, kill, checks; --check SESSION_ID
+scripts/check_notes_export.py      notes.html timestamps vs transcript.srt and the FLAC length
 scripts/transcribe_probe.py        GPU probe on one segment (model hash, timings, VRAM), or the
                            whole pipeline on a stretch: --from/--to [--no-normalize] [--hints]
 docs/manual-test-recording.md      manual checklist, including the 3 h acceptance test
 docs/manual-test-transcription.md  transcription checklist, acceptance test and Italian check
+docs/manual-test-notes.md          notes checklist (so far: checking notes.html in the browser)
 ```
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
@@ -182,7 +193,8 @@ Default `%LOCALAPPDATA%\StudyScribe`, never relative to the working directory. O
 ```
 <data>/app.db
 <data>/sessions/<session_id>/audio/000001.wav …
-<data>/sessions/<session_id>/exports/transcript.srt, transcript.md, transcript-dropped.txt, audio.flac
+<data>/sessions/<session_id>/exports/transcript.srt, transcript.md, transcript-dropped.txt, audio.flac,
+                                              notes.md, notes.html, notes-vN.md, notes-vN.html
 ```
 
 The speech model lives in the Hugging Face cache (`%USERPROFILE%\.cache\huggingface\hub`),
@@ -197,7 +209,9 @@ py -3.12 -m venv .venv                          # create the venv
 .venv\Scripts\studyscribe --help                # CLI
 .venv\Scripts\studyscribe record --title "Lecture 3" --course "Calculus"   # Ctrl+C to stop
 .venv\Scripts\studyscribe transcribe SESSION_ID  # transcribe (--language it, --restart)
-.venv\Scripts\studyscribe export SESSION_ID --audio   # rewrite exports, join audio.flac
+.venv\Scripts\studyscribe export SESSION_ID --audio   # rewrite exports (and the latest notes), join audio.flac
+.venv\Scripts\studyscribe export SESSION_ID --notes-version 1   # notes-v1.md/.html (the 1st finished generation)
+.venv\Scripts\python scripts\check_notes_export.py <data>\sessions\SESSION_ID\exports   # timestamps vs SRT
 .venv\Scripts\studyscribe notes SESSION_ID         # study notes with Ollama (--restart, --effort)
 .venv\Scripts\studyscribe transcribe SESSION_ID --notes   # transcription, then the notes
 .venv\Scripts\studyscribe template list            # note templates (import FILE.json)
