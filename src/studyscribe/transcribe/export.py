@@ -148,7 +148,7 @@ def exports_dir(data_dir: Path, session_id: str) -> Path:
     return session_dir(data_dir, session_id) / EXPORTS_SUBDIR
 
 
-def _write_text(path: Path, text: str) -> None:
+def write_text(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8", newline="\n")
     os.replace(tmp, path)
@@ -169,7 +169,7 @@ def export_text(conn: sqlite3.Connection, data_dir: Path, session_id: str) -> li
         DROPPED_FILE: to_dropped(all_segments),
     }
     for name, text in files.items():
-        _write_text(folder / name, text)
+        write_text(folder / name, text)
     return [folder / name for name in files]
 
 
@@ -186,15 +186,15 @@ def _header(conn: sqlite3.Connection, session_id: str, run: sqlite3.Row) -> dict
     return {
         "title": session["title"] or session_id,
         "Course": summary["course"],
-        "Recorded": _local(session["started_at"]) + f" (session {session_id})",
+        "Recorded": local_time(session["started_at"]) + f" (session {session_id})",
         "Duration": clock(summary["duration_ms"]),
         "Language": language,
         "Model": f"{run['engine']} {run['model']} ({run['compute_type']})",
-        "Transcribed": _local(run["finished_at"]) if run["finished_at"] else None,
+        "Transcribed": local_time(run["finished_at"]) if run["finished_at"] else None,
     }
 
 
-def _local(iso: str) -> str:
+def local_time(iso: str) -> str:
     return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
