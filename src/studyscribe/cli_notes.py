@@ -18,6 +18,7 @@ from typing import Any, TextIO
 from studyscribe.db import repo
 from studyscribe.db.connection import transaction
 from studyscribe.notes import gpu, keys, pricing
+from studyscribe.notes.export import NotesUnavailable, export_notes, warnings
 from studyscribe.notes.pipeline import NotesError
 from studyscribe.notes.providers import DEFAULT_MODELS, DEFAULT_PROVIDER, make_provider
 from studyscribe.notes.providers.base import EFFORTS, PROVIDERS, LlmError, LlmProvider
@@ -157,6 +158,28 @@ def cmd_notes(conn: sqlite3.Connection, data_dir: Path, args: argparse.Namespace
         print(f"Error: {exc.message}{remedy}", file=out)
         return 1
     print_summary(result.notes_id, result.stats, result.result, out)
+    # The notes are in the database whatever happens here: a failed export is only reported.
+    write_notes_exports(conn, data_dir, args.session_id, out)
+    return 0
+
+
+def write_notes_exports(conn: sqlite3.Connection, data_dir: Path, session_id: str, out: TextIO,
+                        *, version: int | None = None) -> int:
+    """Write notes.md and notes.html (or notes-vN.*) and say what was written and what the user
+    should know; 0 when written, 1 when not (the message says why)."""
+    try:
+        result = export_notes(conn, data_dir, session_id, version=version)
+    except NotesUnavailable as exc:
+        print(f"Cannot export the notes: {exc}", file=out)
+        return 1
+    except OSError as exc:
+        print(f"Cannot write the notes exports: {exc}", file=out)
+        return 1
+    doc = result.doc
+    print(f"Notes version {doc.version} of {doc.total_versions} ({doc.model}, {doc.finished}) "
+          f"in {result.folder}: {result.markdown.name}, {result.html.name}", file=out)
+    for line in warnings(result):
+        print(f"  warning: {line}", file=out)
     return 0
 
 

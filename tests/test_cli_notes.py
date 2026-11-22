@@ -171,3 +171,87 @@ def test_transcribe_with_notes_runs_the_notes_after_freeing_whisper(db, data_dir
     assert "Whisper's GPU memory is released; now the notes." in text
     # a 10-second recording has too little speech: the notes command says so
     assert code == 1 and "notes need at least 5" in text
+
+
+# --- exports of the notes -------------------------------------------------------------------------
+
+
+def export(db, data_dir, *argv):
+    out = io.StringIO()
+    code = cli.cmd_export(db, data_dir, args_for("export", *argv), out)
+    return code, out.getvalue()
+
+
+def exports_of(data_dir, sid):
+    from studyscribe.transcribe.export import exports_dir
+
+    folder = exports_dir(data_dir, sid)
+    return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+
+
+def test_notes_write_notes_md_and_html_when_they_are_done(db, data_dir, transcribed):
+    sid = transcribed()
+    code, text = notes(db, data_dir, sid)
+    assert code == 0
+    assert "Notes version 1 of 1 (qwen3.5:9b" in text and "notes.md, notes.html" in text
+    assert "warning: audio.flac is not in" in text and f"studyscribe export {sid} --audio" in text
+    assert exports_of(data_dir, sid) == ["notes.html", "notes.md"]  # no audio.flac made up
+
+
+def test_a_failed_notes_export_does_not_fail_the_generation(db, data_dir, transcribed):
+    from studyscribe.transcribe.export import exports_dir
+
+    sid = transcribed()
+    folder = exports_dir(data_dir, sid)
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    folder.write_text("a file where the folder should be", encoding="utf-8")
+    code, text = notes(db, data_dir, sid)
+    assert code == 0 and "Done (generation #1)" in text
+    assert "Cannot write the notes exports" in text
+    assert repo.get_latest_done_notes(db, sid) is not None
+
+
+def test_export_has_nothing_to_say_about_notes_that_do_not_exist(db, data_dir, transcribed):
+    sid = transcribed()
+    code, text = export(db, data_dir, sid)
+    assert code == 0 and "Notes version" not in text and "notes" not in text.split("\n", 1)[-1]
+    assert exports_of(data_dir, sid) == ["transcript-dropped.txt", "transcript.md",
+                                         "transcript.srt"]
+
+
+def test_export_writes_the_latest_notes(db, data_dir, transcribed):
+    sid = transcribed()
+    notes(db, data_dir, sid)
+    (data_dir / "sessions" / sid / "exports" / "notes.html").unlink()
+    code, text = export(db, data_dir, sid)
+    assert code == 0 and "Notes version 1 of 1" in text
+    assert exports_of(data_dir, sid) == [
+        "notes.html", "notes.md", "transcript-dropped.txt", "transcript.md", "transcript.srt"]
+
+
+def test_export_notes_version_writes_versioned_files(db, data_dir, transcribed):
+    sid = transcribed()
+    notes(db, data_dir, sid)
+    notes(db, data_dir, sid, "--restart")
+    code, text = export(db, data_dir, sid, "--notes-version", "1")
+    assert code == 0 and "Notes version 1 of 2" in text and "notes-v1.md, notes-v1.html" in text
+    assert {"notes-v1.html", "notes-v1.md", "notes.html", "notes.md"} <= set(
+        exports_of(data_dir, sid))
+
+
+def test_export_notes_version_that_does_not_exist_lists_the_versions(db, data_dir, transcribed):
+    sid = transcribed()
+    notes(db, data_dir, sid)
+    code, text = export(db, data_dir, sid, "--notes-version", "5")
+    assert code == 1 and "no notes version 5" in text and "Available: 1 (" in text
+    assert "notes-v5.md" not in exports_of(data_dir, sid)
+    code, text = export(db, data_dir, transcribed(), "--notes-version", "1")
+    assert code == 1 and "no finished notes" in text
+
+
+def test_export_with_audio_in_place_has_no_audio_warning(db, data_dir, transcribed):
+    sid = transcribed()
+    notes(db, data_dir, sid)
+    (data_dir / "sessions" / sid / "exports" / "audio.flac").write_bytes(b"fLaC")
+    code, text = export(db, data_dir, sid)
+    assert code == 0 and "warning" not in text

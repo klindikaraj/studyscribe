@@ -117,11 +117,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="write the transcript files of a session (exports/ in its folder)",
         description="Write transcript.srt, transcript.md and transcript-dropped.txt from the "
         "session's transcript (transcribe writes them too); --audio also joins the segments "
-        "into audio.flac, with the same timeline.",
+        "into audio.flac, with the same timeline. When the session has finished notes it also "
+        "writes notes.md and notes.html from the latest ones (the page plays audio.flac, so run "
+        "--audio once); --notes-version N writes notes-vN.md and notes-vN.html instead.",
     )
     export_parser.add_argument("session_id", metavar="SESSION_ID")
     export_parser.add_argument("--audio", action="store_true",
                                help="also write audio.flac (the whole recording, lossless)")
+    export_parser.add_argument("--notes-version", type=int, metavar="N",
+                               help="write the notes of version N (the Nth finished generation, "
+                               "from 1) as notes-vN.md and notes-vN.html")
     cli_notes.add_commands(commands)
     commands.add_parser(
         "sessions",
@@ -365,7 +370,13 @@ def cmd_export(conn: sqlite3.Connection, data_dir: Path, args: argparse.Namespac
     if repo.get_session(conn, args.session_id) is None:
         print(f"No session {args.session_id} in this data directory.", file=out)
         return 2
-    return _write_exports(conn, data_dir, args.session_id, out, audio=args.audio)
+    code = _write_exports(conn, data_dir, args.session_id, out, audio=args.audio)
+    if code != 0:
+        return code
+    version = getattr(args, "notes_version", None)
+    if version is None and not repo.list_done_notes(conn, args.session_id):
+        return 0  # no notes yet: nothing to say about them
+    return cli_notes.write_notes_exports(conn, data_dir, args.session_id, out, version=version)
 
 
 def _write_exports(conn: sqlite3.Connection, data_dir: Path, session_id: str, out: TextIO,
