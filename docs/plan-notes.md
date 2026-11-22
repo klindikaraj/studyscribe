@@ -1300,7 +1300,7 @@ Ollama updated itself from 0.40.15 (2026-11-09) to 0.40.16 (seen on 2026-11-16):
 
 ### Piece 4: exports (Claude, 2026-11-22)
 
-Done: `notes.md` and `notes.html` from any completed generation, 578 tests pass (515 before).
+Done: `notes.md` and `notes.html` from any completed generation, 585 tests pass (515 before).
 Modules, one commit each: `notes/labels.py` (en/it texts), `repo.list_done_notes`, `notes/doc.py`
 (a generation read for rendering), `notes/render_common.py`, `render_md.py`, `render_html.py` with
 `resources/export/notes.css` and `notes.js`, `notes/export.py` (files, warnings), CLI,
