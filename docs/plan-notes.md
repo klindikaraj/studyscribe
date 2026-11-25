@@ -246,7 +246,8 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
 
 ### Sampling and determinism
 
-- Thinking off (`think: false`), fixed `seed` (stored in `options_json`), sampling from a
+- Thinking off (`think: false`), fixed `seed` (meant to be stored in `options_json`; it is not,
+  see piece 5), sampling from a
   small per-model table with the values recommended by the model card for non-thinking use.
   Qwen3.5: temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5. Gemma 4: temperature 1.0,
   top_p 0.95, top_k 64.
@@ -314,12 +315,13 @@ whether two identical seeded requests give the same text.
 4. Export: `notes.md`, `notes.html` with player and clickable timestamps; a banner when
    `audio.flac` is missing. **Done (2026-11-22), see "Piece 4" in the findings; browser check by
    the user pending.**
-5. Acceptance: notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
+5. **Not passed (2026-11-25):** the 3 h generation stops in the final reduce; cause and chosen
+   fixes in "Piece 5" in the findings. Acceptance: notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
    off and on) and `gemma4:12b-it-qat` (quality, time, VRAM from `llm_calls` and the probe);
    cloud models only
    if the user wants them later (after asking; see "Cloud providers set aside" in the
    findings). A checklist in
-   `docs/manual-test-notes.md` (written in piece 5; it does not exist yet): timestamps to
+   `docs/manual-test-notes.md` (section A): timestamps to
    click, definitions to compare with the audio, "TEC" (S186, 0:14:08) listed in "Words to
    check by listening" and kept as "TEC" or put in the unclear points, never replaced by a
    method name; code items with a warning checked against the audio. Library names stay as
@@ -1343,3 +1345,128 @@ Not verified:
 - The real look in Chrome, and `<details>` in each Markdown viewer.
 - Code states on real notes: it-copy has no code items (v5.1 on Italian), so they are covered by
   fixtures only.
+
+### Piece 5: acceptance with real notes (Claude, 2026-11-25; measuring only, nothing changed)
+
+**Result: not passed.** With the default settings the notes of the 3 h lecture are never finished.
+Cause: the final reduce ignores its item targets (159 items against 83) and needs 9,406 output
+tokens, over the 8,192 cap; the retry with 16,384 does not fit, because the input (16,092 tokens,
+allowed by `reduce_max_input` 16,000 plus the prompt) is above the 15,872 that a 32k context leaves.
+The size check does not foresee it. The 20-minute lecture passes. Thinking on and
+`gemma4:12b-it-qat`, named in the first plan of this piece, were not run.
+
+qwen3.5:9b, effort none, prompt v5.1, Ollama 0.40.18 (it was 0.40.16 in piece 3), GPU otherwise
+idle, driver 617.42. Databases backed up with SQLite's backup API first (`integrity_check` ok).
+
+**Seed and Ollama version.** it-copy versions 1 and 2 (piece 3, seed 1, Ollama 0.40.16) are byte
+identical, so "0 code items in two real runs" was one sample. With the same seed, prompt, options
+and transcript, version 3 on 0.40.18 is different (6 code items instead of 0). The Ollama update
+is the likely cause, not a proven one (nothing else on the PC was compared). Within 0.40.18
+the same seed repeats exactly: the same three hashes from the CLI, from the pipeline run outside
+the repo and from the notes after a re-transcription (identical lines). The seed is not in
+`options_json`, contrary to the plan.
+
+**it-copy, 20 minutes** (2 maps, 1 final reduce):
+
+| | Ollama 0.40.16 seed 1 (v1 = v2) | 0.40.18 seed 1 (v3) | seed 2 | seed 3 |
+|---|---|---|---|---|
+| Code items | 0 | 6 (1 ok, 3 check, 2 unsupported) | 0 | 4 (1 ok, 3 check) |
+| Coverage warning | S226-S241 | S226-S241 | S225-S241 | S220-S241 |
+
+Code extraction in Italian is not stable: 6, 0 and 4 items for seeds 1, 2, 3. Of the 10 items, 6 are
+code said by the lecturer with adapted names (`unsqueeze` twice, `torch.tensor` twice from S56-S57,
+`Linear(1, 1)` twice from S88, S99, S101, though `nn` / `torch.nn` was not said: S88 says
+"PyTorch.neuralNetwork") and 4 are rebuilt from a description (`y_predicted = model(x)`,
+`manual_seed(42)`, `MSELoss()`, the `Adam(...)` call). The 8 warnings, one by one:
+- 3 from the translation: `model` for "modello" (both `Linear` items; the word is said, but more
+  than one line away) and `optimizer` / `optim` for "ottimizzatore". The two `Linear` ones are
+  false alarms;
+- 2 from placeholder or abbreviated names: `valori_misteriosi`, and `valori_reali` with `dtype`
+  ("datatype");
+- 2 deserved: `y_predicted` (never said) and `manual_seed`;
+- 1 for the wrong reason: the `MSELoss` item is flagged only for `torch`. `MSE` itself passes
+  because "se" is 80% similar to it: a 3-letter part matches 2-letter words (blind spot).
+
+Version 3: 4/5 outline, 7/7 concepts, 4/5 definitions, 3/5 questions, 1/1 open points. Time 1 min
+52 s warm, 3 min 07 s in the first run of the session (34 s to load, then 53 s of a first prefill with
+the GPU idle; cause not investigated). An S-number was written inside an open point's text (v3 and
+seed 3; only code is rejected for that).
+
+**3h-copy, 2:57:34.** Maps: 15 in 6 min 55 s (51.6-52.4 tokens/s, 1,850 tokens/s of prefill,
+8,099 MiB of VRAM at the peak, desktop included), 0 invalid references, outline,
+concepts, definitions and questions at target in all 15 blocks (code from 0, in block 7, to 11).
+Then **the generation stops**: no partial reduce was needed (the parts are about 14,800 tokens,
+under the 16,000 budget; the estimate expected 2) and the final reduce wrote 8,192 tokens,
+`Truncated`. The retry at 16,384 cannot run (input 16,092 > 32,768 - 16,384 - 512 = 15,872), so
+the run ends with a message that says "asks again with more room" and does not. 10 min 10 s
+wall. A resume is expected to fail the same way (not tried).
+
+Diagnosis (final reduce replayed outside the repo, seed 1, context 49,152, cap 16,384, stored
+maps): it ends by itself at 9,406 tokens, not a loop. It does not follow the targets:
+45 concepts (target 20), 41 definitions (12), 48 code items (20): 159 items against 83. This is the
+main cause. The size check does not see it: it expects the targets, at the tokens per item of
+compact JSON (46), while the model writes indented JSON (about 60), which alone uses up the 1.25
+safety factor. The cut text is not stored, so it had to be replayed to be seen.
+
+**Partial reduces, kill, resume** (3h-copy-p, a separate copy, with `reduce_max_input` 10,000 in a
+script: the CLI has no option): killed 20 s into partial 2 with `taskkill /F /T`. The model stayed
+in VRAM (8,090 MiB), `sessions` showed `interrupted 15/15`, and the resume reused the loaded
+model. No map was redone. **Partial 1 was redone** (142.7 s, the same output hash): only map
+answers are reused. Finished in 360 s: partials 8,495 -> 7,110 and 9,030 -> 4,359 tokens (the first
+near the 8,192 cap), final 9,905 -> 5,827 tokens; 15/15 outline, 23/20 concepts, 12/12
+definitions, 30/20 code, 10/10 questions, 2/6 open points. Code 21 ok, 9 check, 0 unsupported.
+`check_notes_export.py`: 147 exact links OK. Sum of the stages for a lecture that needs
+partials: about 13 minutes (not a single uninterrupted run). Coverage warnings: blocks 4
+(S308-S327, the Mad Libs code), 9 (S811-S825, the boolean return) and 11 (S1016-S1051, the rest
+of `updateRecords`): **all three are real content**. Not warned because they are not at the end of
+a block: gaps of 24 lines (S683-S706, else-if chain) and, in Italian, 31 lines (S58-S88, pyplot
+and `PyTorch.neuralNetwork`). The final notes are uneven: blocks 1 and 2 have 19 and 13 items,
+blocks 3, 7, 11 and 13 have 1 or 2.
+
+**Sample** (5 random items per lecture, chosen with a fixed seed before reading, compared with the
+cited lines; text only, not listened to): English 3 right, 1 partly (`removeFromArray =
+myArray.pop()` for "remove from our array" / "r array"), 1 wrong (the while loop written as spoken
+words and as a for loop). Italian 2 right, 1 partly (a question whose answer adds "if the error
+is already minimal": S178-S179 say it is still falling and the rate already high), 2 code
+items rebuilt from a description. Other errors seen while reading code:
+`const lookup` where "bar [var] lookup" was said and `test['entree']` without the space of the
+property name are graded `ok`; `(a, b) => a + b` for a function that concatenates arrays is
+graded `check`.
+
+**VRAM with `transcribe --notes`** (it-copy-tn, `HF_HUB_OFFLINE=1`): 3.1 GB while Whisper works, 927
+MiB when the notes start, then 8.2 GB with Ollama: never together. `--restart` unlinked versions
+1-3 from their transcript, as designed.
+
+**Other findings**: the `notes` command has no keep-awake, while the PC's standby is 15 minutes
+on AC; `print_summary` still says the export "is not written yet"; a killed request has no row
+in `llm_calls` and `wall_s` covers only the last attempt.
+
+**Fixes** (decided by the user, 2026-11-25). For the next piece, in a new session:
+
+1. `reduce_max_input` from 16,000 to about 10,000, so partial reduces happen and the retry fits.
+   Tried once; the first partial answer (7,110 tokens) was close to the 8,192 cap.
+2. Size the reduces on the real answers: count the tokens per item as the model writes them
+   (indented JSON) and allow for answers that exceed their targets.
+3. Store the text of a truncated answer, and do not say "asks again with more room" when it does
+   not.
+4. Keep the PC awake during `notes` (and the notes part of `transcribe --notes`).
+5. Store the seed and the Ollama version with the generation.
+8. `code_check`: a 2-letter word must not match a 3-letter part ("se" for `MSE`); check `var` /
+   `let` / `const` against what was said.
+9. Remove "is not written yet" from `print_summary`.
+
+Verification: generation #1 of `3h-copy` (interrupted, 15 maps stored, kept as it is) resumed with
+the default settings. Constraint on fix 5: a generation is resumed only when `options_json` is
+equal, so a new key there would discard #1 and redo its maps; the seed and the version must be
+stored outside that comparison, or a missing key must count as a match.
+
+Postponed, known limits:
+
+- 6: coverage warnings see only the end of a block, in the map answers: gaps inside a block and
+  blocks almost absent from the final notes are not reported.
+- 7: a resume redoes the partial reduces already finished (143 s in the test).
+- 10: prompt work. Code extraction in Italian is unstable and partly rebuilt from descriptions,
+  and the reduces do not follow their targets. The prompt stays v5.1.
+
+Test data: `3h-copy-p` is kept until the A6 listening is confirmed; `it-copy-tn` was deleted;
+`piece5` holds the backups, the logs and the measuring scripts.
