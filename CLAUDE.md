@@ -9,7 +9,8 @@ timestamps. The repo is public; the app runs on one Windows PC.
 - Target machine: Windows 11 desktop with an NVIDIA RTX 3060 (12 GB).
 - Python 3.12 venv in `.venv` (`requires-python >=3.11`), `src/` layout, package `studyscribe`.
 - Storage: SQLite (WAL; FTS5 trigram search later) plus one folder per session.
-- Transcription: local faster-whisper (step 2). Notes: cloud LLM with a configurable model (step 3).
+- Transcription: local faster-whisper (step 2). Notes: local LLM through
+  Ollama by default, cloud optional, configurable model (step 3).
 - Lectures are mostly English, some Italian: automatic language detection with a manual override.
 - MVP is CLI only (steps 1-3). Live UI (FastAPI + WebSocket), slide capture and automatic
   session detection come later: keep modules decoupled so they can be added without rewrites.
@@ -26,13 +27,16 @@ timestamps. The repo is public; the app runs on one Windows PC.
 | 5 | Slides: screenshots, perceptual hash, OCR | slides appear next to the right note section |
 | 6 | Extras: cloud ASR, automatic detection, desktop packaging | — |
 
-Current state: steps 1 and 2 done. Step 1's acceptance test (`docs/manual-test-recording.md`,
+Current state: steps 1, 2 and 3 done: the command-line MVP is complete.
+Step 1's acceptance test (`docs/manual-test-recording.md`,
 section C: 3 h recording) passed on 2026-10-30. Step 2 (plan and findings:
 `docs/plan-transcription.md`) passed its acceptance test on the same 3 h recording on
 2026-11-02 (`docs/manual-test-transcription.md`, section C), and the Italian check (section D)
-passed too. Step 3 is in progress (plan and findings: `docs/plan-notes.md`): piece 1 (cloud
+passed too. Step 3 (plan and findings: `docs/plan-notes.md`) done on 2026-11-25, with the known
+limits below. Map prompt v5.1 is the default and stays frozen until the user decides to work on
+fix 10 (after the MVP): do not change it before. Its pieces: piece 1 (cloud
 providers) and 1b (Ollama, default `qwen3.5:9b`, thinking off) done; piece 2 (pipeline, no
-database) done offline, map prompt v5.1 frozen until the piece 5 acceptance; piece 3 (database
+database) done offline; piece 3 (database
 v3, CLI) done; piece 4 (exports `notes.md` / `notes.html`, 2026-11-22) done, the user's browser
 check passed on 2026-11-25 (`docs/manual-test-notes.md`, A1-A6); piece 5
 (acceptance with real notes) failed its first measurement (the 3 h lecture stopped in the final
@@ -128,61 +132,105 @@ Full agreed plan, findings and test results: `docs/plan-transcription.md`.
 ## Layout
 
 ```
-src/studyscribe/
-  cli.py              `studyscribe record|transcribe|export|sessions|recover` (also
-                      `python -m studyscribe`): live status/progress lines, recovery first
+pyproject.toml        package, dependencies, the `cuda` and `dev` extras, pytest settings
+README.md             what the app is, setup, usage
+src/studyscribe/      the package
+  cli.py              `studyscribe record|transcribe|notes|export|sessions|recover|template|
+                      config` (also `python -m studyscribe`, __main__.py): live status/progress
+                      lines, recovery first
+  cli_notes.py        CLI of the notes: `notes`, the options of `transcribe --notes`, `template`,
+                      `config set`
   config.py           data directory resolution and shared settings
   recording.py        RecorderHandle: parent side of the capture process (start/events/stop/kill)
   session.py          new_session (parent, owner lock) and SessionSink (capture process: capture
                       lock, segments + manifest)
-  recovery.py         recover_all / recover_session: repair abandoned sessions
+  recovery.py         recover_all / recover_session: repair abandoned sessions, transcriptions
+                      and notes generations
   verify.py           checks on a recorded session: manifest vs files, where the sound is
-  audio/dsp.py        downmix, streaming resampler, int16 conversion, level meter
-  audio/reader.py     SessionAudio: a session's segments as one read-only int16 signal
-  audio/timeline.py   TimelineAligner: packets -> gap-free timeline aligned to the clock (pure)
-  audio/devices.py    DefaultOutputMonitor: default output endpoint ID through COM (ctypes)
-  audio/capture.py    AudioSource/Sink protocols, LoopbackSource, run_capture loop (device
+  audio/              step 1: from WASAPI to 60 s WAV segments
+    capture.py        AudioSource/Sink protocols, LoopbackSource, run_capture loop (device
                       reopen), capture_main
-  audio/wav.py        WavWriter (unbuffered, header patched every 1 s, fsync every 10 s),
+    devices.py        DefaultOutputMonitor: default output endpoint ID through COM (ctypes)
+    dsp.py            downmix, streaming resampler, int16 conversion, level meter
+    timeline.py       TimelineAligner: packets -> gap-free timeline aligned to the clock (pure)
+    segments.py       SegmentWriter: exact 60 s segments, gap frames per segment
+    wav.py            WavWriter (unbuffered, header patched every 1 s, fsync every 10 s),
                       repair_wav_header
-  audio/segments.py   SegmentWriter: exact 60 s segments, gap frames per segment
-  db/connection.py    connect (no migration), open_database (migrates), transaction
-  db/migrations.py    MIGRATIONS list, PRAGMA user_version
-  db/repo.py          queries on courses, sessions, audio_segments
-  system/power.py     keep_system_awake (SetThreadExecutionState)
-  system/locks.py     ByteLock: one-byte file lock released by the OS when the process dies
+    reader.py         SessionAudio: a session's segments as one read-only int16 signal
+  db/                 SQLite
+    connection.py     connect (no migration), open_database (migrates), transaction
+    migrations.py     MIGRATIONS list, PRAGMA user_version
+    repo.py           queries on courses, sessions, audio segments, transcripts and notes
+  system/             thin wrappers around Windows APIs
+    power.py          keep_system_awake (SetThreadExecutionState)
+    locks.py          ByteLock: one-byte file lock released by the OS when the process dies
                       (asynchronously on Windows: acquire(wait_s=...) when the holder is dead)
-  transcribe/engine.py    Transcriber protocol, AsrSegment/AsrWord, TranscriberError
-  transcribe/whisper.py   FasterWhisperTranscriber (only module importing faster_whisper),
-                          GPU error messages
-  transcribe/cuda.py      preload of cuBLAS from the nvidia-cublas-cu12 wheel (Windows)
-  transcribe/vad.py       Silero VAD wrapper (speech spans, pause spans)
-  transcribe/levels.py    normalisation of the ASR copy (pure)
-  transcribe/windows.py   window cuts in pauses (pure)
-  transcribe/language.py  language from speech chunks (pure)
-  transcribe/segments.py  TranscriptSegment, session-time mapping, split of long segments
-  transcribe/filters.py   anti-hallucination rules (pure)
-  transcribe/pipeline.py  detect_language, transcribe_windows (no database)
-  transcribe/runner.py    transcribe_session: checks, lock, run lifecycle, resume (database)
-  transcribe/export.py    srt / md / dropped list / audio.flac
-  notes/                  the notes (step 3), modules listed in docs/plan-notes.md; the exports:
-    doc.py                a generation read for rendering: versions, same-transcript check, audio
-    labels.py             fixed texts around the notes, en/it
-    render_common.py      warnings, appendix rows, footer shared by both renderers
-    render_md.py          notes.md (escaped text, fenced code, <details> answers)
-    render_html.py        notes.html (inline style/script from resources/export, CSP by hash)
-    export.py             writes notes.md / notes.html (or notes-vN.*) atomically; never audio.flac
-tests/                pytest, no audio hardware required; tests/fakes.py holds fakes and helpers
-scripts/capture_probe.py   real-hardware probe: one WAV + stream stats, --session "Title",
-                           --recover, --silence-limit SECONDS
-scripts/manual_recording_test.py   guided manual test: media key for play/pause/resume (or
-                           --manual), unplug/replug, kill, checks; --check SESSION_ID
-scripts/check_notes_export.py      notes.html timestamps vs transcript.srt and the FLAC length
-scripts/transcribe_probe.py        GPU probe on one segment (model hash, timings, VRAM), or the
-                           whole pipeline on a stretch: --from/--to [--no-normalize] [--hints]
-docs/manual-test-recording.md      manual checklist, including the 3 h acceptance test
-docs/manual-test-transcription.md  transcription checklist, acceptance test and Italian check
-docs/manual-test-notes.md          notes checklist (so far: checking notes.html in the browser)
+  transcribe/         step 2: local transcription
+    engine.py         Transcriber protocol, AsrSegment/AsrWord, TranscriberError
+    whisper.py        FasterWhisperTranscriber (only module importing faster_whisper),
+                      GPU error messages
+    cuda.py           preload of cuBLAS from the nvidia-cublas-cu12 wheel (Windows)
+    vad.py            Silero VAD wrapper (speech spans, pause spans)
+    levels.py         normalisation of the ASR copy (pure)
+    windows.py        window cuts in pauses (pure)
+    language.py       language from speech chunks (pure)
+    segments.py       TranscriptSegment, session-time mapping, split of long segments
+    filters.py        anti-hallucination rules (pure)
+    pipeline.py       detect_language, transcribe_windows (no database)
+    runner.py         transcribe_session: checks, lock, run lifecycle, resume (database)
+    export.py         srt / md / dropped list / audio.flac
+  notes/              step 3: study notes
+    transcript.py     the transcript as numbered lines (S-numbers), the prompt's line format
+    blocks.py         cuts the transcript into blocks of 10-15 min, in pauses (pure)
+    templates.py      note templates: model, loading, item targets
+    schema.py         pydantic model per section kind, output model built from a template
+    prompts.py        PROMPT_VERSION, rendering of the prompt files, their hash
+    pipeline.py       map / partial reduces / final reduce, validation, retries (no database)
+    reduce_plan.py    grouping of map outputs for the hierarchical reduce (pure)
+    refs.py           reference validation and resolution to timestamps (pure)
+    code_check.py     graded check of code names against the cited lines (pure)
+    uncertain.py      words Whisper was unsure about, for the appendix (pure)
+    estimate.py       requests, tokens, time and cost before a run (pure)
+    runner.py         prepare and generate a session's notes: checks, lock, lifecycle, resume,
+                      call records (database)
+    pricing.py        list prices with their verification date, cost from usage
+    keys.py           API keys: keyring, environment variables (only module importing keyring)
+    gpu.py            VRAM from nvidia-smi (optional)
+    doc.py            a generation read for rendering: versions, same-transcript check, audio
+    labels.py         fixed texts around the notes, en/it
+    render_common.py  warnings, appendix rows, footer shared by both renderers
+    render_md.py      notes.md (escaped text, fenced code, <details> answers)
+    render_html.py    notes.html (inline style/script from resources/export, CSP by hash)
+    export.py         writes notes.md / notes.html (or notes-vN.*) atomically; never audio.flac
+    providers/        one interface, three backends
+      base.py         LlmProvider protocol, request/response/usage, LlmError subclasses with a
+                      remedy, key redaction
+      ollama.py       default: native /api/chat (stdlib HTTP), context and GPU checks, load/unload
+      claude.py       Anthropic (only module importing anthropic)
+      gemini.py       Google Gemini (only module importing google.genai)
+      retry.py        backoff and pacing (pure, injectable clock)
+    resources/        prompts/ (map.md, code-rule.md, reduce.md: frozen, v5.1), templates/
+                      (studio.json), export/ (notes.css, notes.js)
+scripts/              tools run by hand, on real hardware or on test copies
+  capture_probe.py    real-hardware probe: one WAV + stream stats, --session "Title",
+                      --recover, --silence-limit SECONDS
+  manual_recording_test.py   guided manual test: media key for play/pause/resume (or
+                      --manual), unplug/replug, kill, checks; --check SESSION_ID
+  transcribe_probe.py GPU probe on one segment (model hash, timings, VRAM), or the
+                      whole pipeline on a stretch: --from/--to [--no-normalize] [--hints]
+  llm_probe.py        LLM providers: one tiny structured request, exact token counts; with the
+                      local one also a map-like request on a block of a lecture
+  check_notes_export.py      notes.html timestamps vs transcript.srt and the FLAC length
+tests/                pytest, no audio hardware required
+  conftest.py         fixtures: data_dir, db, start_session
+  fakes.py            fakes and helpers (clock, audio sources, FakeTranscriber, FakeLlm)
+  notes_fixtures.py   hand-made NotesDocs for the renderer tests
+  test_*.py           about one per module (test_notes_*, test_llm_*: step 3)
+docs/
+  plan-recording.md, plan-transcription.md, plan-notes.md   plan and findings of steps 1, 2, 3
+  manual-test-recording.md      manual checklist, including the 3 h acceptance test
+  manual-test-transcription.md  transcription checklist, acceptance test and Italian check
+  manual-test-notes.md          notes.html checked in the browser (A1-A7)
 ```
 
 Fakes passed to the capture process (via `CaptureConfig` factories) must be picklable:
