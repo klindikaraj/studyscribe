@@ -34,7 +34,10 @@ passed too. Step 3 is in progress (plan and findings: `docs/plan-notes.md`): pie
 providers) and 1b (Ollama, default `qwen3.5:9b`, thinking off) done; piece 2 (pipeline, no
 database) done offline, map prompt v5.1 frozen until the piece 5 acceptance; piece 3 (database
 v3, CLI) done; piece 4 (exports `notes.md` / `notes.html`, 2026-11-22) done, the user's browser
-check pending (`docs/manual-test-notes.md`). Code read aloud
+check passed on 2026-11-25 (`docs/manual-test-notes.md`, A1-A5; A6 still to listen to); piece 5
+(acceptance with real notes) measured on 2026-11-25 and **not passed**: with the default settings
+the 3 h lecture stops in the final reduce (`Truncated`); fixes 1-5, 8 and 9 chosen for the next
+piece, 6, 7 and 10 postponed ("Piece 5" in `docs/plan-notes.md`). Code read aloud
 is written in code form ("ipsilon pred" -> `y_pred`); library names stay as heard
 ("PyTorch.neuralNetwork" is not turned into `torch.nn`); code names not found in the transcript
 get a warning, never a drop. Known limit: recognition errors are not corrected automatically
