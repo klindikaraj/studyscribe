@@ -317,9 +317,11 @@ whether two identical seeded requests give the same text.
    pending.**
 4. Export: `notes.md`, `notes.html` with player and clickable timestamps; a banner when
    `audio.flac` is missing. **Done (2026-11-22), see "Piece 4" in the findings; browser check by
-   the user pending.**
-5. **Not passed (2026-11-25):** the 3 h generation stops in the final reduce; cause and chosen
-   fixes in "Piece 5" in the findings. Acceptance: notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
+   the user passed (2026-11-25).**
+5. **Passed with known limits (user, 2026-11-25), after the fixes of piece 5b:** the first
+   measurement had failed ("Piece 5" in the findings: the 3 h generation stopped in the final
+   reduce); results and limits in "Piece 5b". Planned acceptance (thinking on and Gemma were not
+   run): notes on the 3 h lecture and on the Italian lecture with `qwen3.5:9b` (thinking
    off and on) and `gemma4:12b-it-qat` (quality, time, VRAM from `llm_calls` and the probe);
    cloud models only
    if the user wants them later (after asking; see "Cloud providers set aside" in the
@@ -1356,7 +1358,8 @@ Not verified:
 
 ### Piece 5: acceptance with real notes (Claude, 2026-11-25; measuring only, nothing changed)
 
-**Result: not passed.** With the default settings the notes of the 3 h lecture are never finished.
+**Result: not passed** (passed later, with the fixes: see "Piece 5b").
+With the default settings the notes of the 3 h lecture are never finished.
 Cause: the final reduce ignores its item targets (159 items against 83) and needs 9,406 output
 tokens, over the 8,192 cap; the retry with 16,384 does not fit, because the input (16,092 tokens,
 allowed by `reduce_max_input` 16,000 plus the prompt) is above the 15,872 that a 32k context leaves.
@@ -1481,7 +1484,8 @@ Test data: `3h-copy-p` was deleted after A6 passed (2026-11-25), and `it-copy-tn
 
 ### Piece 5b: fixes 1-5, 8 and 9 (Claude, 2026-11-25)
 
-Done offline, 622 tests pass (585 before); the prompt (v5.1) and the template were not touched.
+**Result: piece 5 passed with known limits** (user's decision, 2026-11-25; list at the end of this
+section). 624 tests pass (585 before); the prompt (v5.1) and the template were not touched.
 Real runs on the copies: see the end of this section.
 
 Numbers of fix 2, recomputed read-only from `llm_calls` and the `piece5` files (items count the
@@ -1543,11 +1547,13 @@ needs that setting on for the test; `powercfg /requests` (administrator) shows o
 |---|---|---|---|
 | Result | done, 15 of 15 maps reused | done | done |
 | Wall | 8 min 04 s | 15 min 01 s | 1 min 54 s |
-| Maps | (earlier) | 7 min 00 s | 55 s |
-| Partial reduces (out tokens) | 5,554 + 2,617 + 2,499 | the same | none |
+| Maps | none asked (15 stored, 415 s when #1 ran in piece 5) | 15, 420 s | 2, 55 s |
+| Partial reduces | 3: 110 + 51 + 49 = 211 s | 3: 111 + 51 + 49 = 211 s | none |
+| Their output tokens | 5,554 + 2,617 + 2,499 | the same | none |
 | Final reduce | 9,338 in / 10,030 out, 205 s | the same, 203 s | 3,485 / 2,286, 45 s |
 | Token counts | 43, 68.4 s | 43, 59.4 s | 8, 8.1 s |
-| Failed or repeated requests | none (the old error row stays) | none | none |
+| Failed or repeated requests | none: 4 requests, all at attempt 1 (the old error row stays) | none: 19 requests, all at attempt 1 | none |
+| Maps against #1 | the stored ones | 15 of 15 the same text | all 3 answers as version 3 |
 | `ollama_versions` | `["unknown", "0.40.18"]` | `["0.40.18"]` | `["0.40.18"]` |
 
 - The generation of the 3 h lecture finishes with the default settings. The final reduce wrote 10,030
@@ -1555,7 +1561,8 @@ needs that setting on for the test; `powercfg /requests` (administrator) shows o
 - The worst factor in tokens is now 1.76 (10,030 / 5,697), so 2.0 leaves 14%, not 21%. Partial
   reduces do not make the model follow its targets: the final copied 156 of 165 input items (57
   code items and 43 concepts, targets 20 and 20): fix 10, postponed.
-- A and B gave the same 19 answers, and it-copy repeated version 3's three answers with the cap at
+- B repeated #1 exactly: 15 of 15 maps, 3 of 3 partials and the final reduce have the same stored
+  text (`llm_calls.output_json`), and the finished notes are equal. it-copy repeated version 3's three answers with the cap at
   16,384 instead of 8,192: `num_predict` did not change the tokens there. It also means B is not
   a second sample of the quality: same seed, same notes.
 - Anti-standby: `powercfg /requests` once a minute during B (administrator, user). SYSTEM empty
@@ -1566,6 +1573,20 @@ needs that setting on for the test; `powercfg /requests` (administrator) shows o
 - Fix 8 on it-copy: `MSELoss` is now among the names to verify (`MSE` no longer matches "se").
 - Exports: `check_notes_export.py` OK on 3h-copy (293 exact links) and it-copy (59).
 - The token counts cost more than estimated: 59 s of B's 15 minutes. One cause: the final answer is
-  counted (twice) though nothing uses it; about 10 s, deduced from the times. Not changed yet.
+  counted (twice) though nothing uses it; about 10 s, deduced from the times. Removed on 2026-11-25 after these runs, with a test: 41
+  counts instead of 43 on this lecture, worked out and not measured with a real run; the notes do
+  not depend on it. The partial answers are still counted twice, and the second count is used only
+  if another level of partials follows.
+- A6 point 3 (user, 2026-11-25): the three links of the coverage warning start on the right
+  sentence. A6 is complete.
 
-Still to do by the user: A6 point 3 (`docs/manual-test-notes.md`).
+**Known limits accepted with piece 5:**
+
+- The reduces do not follow their targets: the final of the 3 h lecture has 156 items for 91
+  (57 code items and 43 concepts for 20 and 20). Fix 10, postponed.
+- Code extraction in Italian is unstable (6, 0 and 4 items for seeds 1, 2, 3) and partly rebuilt
+  from descriptions ("Piece 5").
+- 6, postponed: coverage warnings see only the end of a block, in the map answers.
+- 7, postponed: a resume redoes the partial reduces already finished.
+- Not verified: thinking on and `gemma4:12b-it-qat` were not run; the final notes of 3h-copy were
+  not compared with the audio (piece 5 compared a sample of earlier notes, with the text only).
