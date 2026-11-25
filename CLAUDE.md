@@ -38,7 +38,8 @@ check passed on 2026-11-25 (`docs/manual-test-notes.md`, A1-A6); piece 5
 (acceptance with real notes) measured on 2026-11-25 and **not passed**: with the default settings
 the 3 h lecture stops in the final reduce (`Truncated`); fixes 1-5, 8 and 9 chosen for the next
 piece, 6, 7 and 10 postponed ("Piece 5" in `docs/plan-notes.md`); piece 5b (those fixes) done
-offline on 2026-11-25, real run on the copies still to do ("Piece 5b"). Code read aloud
+on 2026-11-25, the 3 h lecture finishes with the default settings ("Piece 5b"; A6 point 3 of
+the manual test still to do). Code read aloud
 is written in code form ("ipsilon pred" -> `y_pred`); library names stay as heard
 ("PyTorch.neuralNetwork" is not turned into `torch.nn`); code names not found in the transcript
 get a warning, never a drop. Known limit: recognition errors are not corrected automatically
