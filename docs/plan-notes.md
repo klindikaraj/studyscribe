@@ -1482,7 +1482,7 @@ Test data: `3h-copy-p` was deleted after A6 passed (2026-11-25), and `it-copy-tn
 ### Piece 5b: fixes 1-5, 8 and 9 (Claude, 2026-11-25)
 
 Done offline, 622 tests pass (585 before); the prompt (v5.1) and the template were not touched.
-**The real run on the copies is still to do.**
+Real runs on the copies: see the end of this section.
 
 Numbers of fix 2, recomputed read-only from `llm_calls` and the `piece5` files (items count the
 summary's sentences; expected tokens = targets x 62.6 in English, 80.6 / 85.1 in Italian):
@@ -1501,7 +1501,7 @@ counted gives 46.2. The groups of 3h-copy-p are reconstructed (the copy was dele
    16,384 - 512 - the counted system prompt - 512 of margin, about 14,000 tokens of notes. 16,000
    stays as an upper bound with larger contexts. With thinking on the cap is already 16,384:
    only that is reserved and there is no retry in 32k.
-2. Tokens per item counted on the raw answers (one more count per answer, about +10 s on 3 h),
+2. Tokens per item counted on the raw answers (one more count per answer; cost in the runs below),
    `TARGET_OVERSHOOT` 2.0 instead of `OUTPUT_SAFETY` 1.25. A partial group must fit 8,192 even at
    twice its targets; the final targets must fit 16,384. The final reduce is asked once, with
    16,384: that room is reserved anyway, `num_predict` allocates nothing, an answer of 9,400
@@ -1529,12 +1529,43 @@ Scan with a fake model (lectures of 75-240 minutes, 61-128 tokens per item, redu
 180 minutes at 83 tokens per item with **every** reduce at 2.0; it adds 5 cases, the real one among
 them. Above 100 tokens per item and 1.65 both stop.
 
-Not verified: the factor holds for qwen3.5:9b with thinking off on these two lectures; that
-`num_predict` does not change the tokens generated (it-copy must repeat version 3's final reduce);
-the estimate shown before a run may say 2 partial reduces instead of 3 (it knows the budget, not
+Not verified: the factor beyond qwen3.5:9b with thinking off on these two lectures; the estimate shown before a run may say 2 partial reduces instead of 3 (it knows the budget, not
 the speech limit).
 
 Standby: "15 minutes on AC" (piece 5) is the timeout of this PC, but `powercfg /a` says S3 is
 disabled by the power plan (ALLOWSTANDBY is 0 on AC) and the System log (from 2026-08-14) has no
 sleep event: on AC the PC does not sleep now, whatever the timeout. Testing the effect of fix 4
 needs that setting on for the test; `powercfg /requests` (administrator) shows only the request.
+
+**Real runs (2026-11-25, Ollama 0.40.18, default settings, databases backed up in `piece5b`).**
+
+| | Run A: 3h-copy #1 resumed | Run B: 3h-copy #2, from scratch, uninterrupted | it-copy v4 |
+|---|---|---|---|
+| Result | done, 15 of 15 maps reused | done | done |
+| Wall | 8 min 04 s | 15 min 01 s | 1 min 54 s |
+| Maps | (earlier) | 7 min 00 s | 55 s |
+| Partial reduces (out tokens) | 5,554 + 2,617 + 2,499 | the same | none |
+| Final reduce | 9,338 in / 10,030 out, 205 s | the same, 203 s | 3,485 / 2,286, 45 s |
+| Token counts | 43, 68.4 s | 43, 59.4 s | 8, 8.1 s |
+| Failed or repeated requests | none (the old error row stays) | none | none |
+| `ollama_versions` | `["unknown", "0.40.18"]` | `["0.40.18"]` | `["0.40.18"]` |
+
+- The generation of the 3 h lecture finishes with the default settings. The final reduce wrote 10,030
+  tokens (156 items for 91): with the 8,192 cap it would have been cut again.
+- The worst factor in tokens is now 1.76 (10,030 / 5,697), so 2.0 leaves 14%, not 21%. Partial
+  reduces do not make the model follow its targets: the final copied 156 of 165 input items (57
+  code items and 43 concepts, targets 20 and 20): fix 10, postponed.
+- A and B gave the same 19 answers, and it-copy repeated version 3's three answers with the cap at
+  16,384 instead of 8,192: `num_predict` did not change the tokens there. It also means B is not
+  a second sample of the quality: same seed, same notes.
+- Anti-standby: `powercfg /requests` once a minute during B (administrator, user). SYSTEM empty
+  from 19:12:00 to 19:14:01, `python.exe` (the base interpreter of the venv) at each of the 15
+  samples from 19:15:01 to 19:29:01, empty again at 19:30:01 (the run lasted from 19:14:13 to
+  19:29:15). The effect (the PC staying awake) was not tested: standby is off on this PC on
+  purpose.
+- Fix 8 on it-copy: `MSELoss` is now among the names to verify (`MSE` no longer matches "se").
+- Exports: `check_notes_export.py` OK on 3h-copy (293 exact links) and it-copy (59).
+- The token counts cost more than estimated: 59 s of B's 15 minutes. One cause: the final answer is
+  counted (twice) though nothing uses it; about 10 s, deduced from the times. Not changed yet.
+
+Still to do by the user: A6 point 3 (`docs/manual-test-notes.md`).
