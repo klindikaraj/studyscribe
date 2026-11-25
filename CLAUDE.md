@@ -35,11 +35,16 @@ providers) and 1b (Ollama, default `qwen3.5:9b`, thinking off) done; piece 2 (pi
 database) done offline, map prompt v5.1 frozen until the piece 5 acceptance; piece 3 (database
 v3, CLI) done; piece 4 (exports `notes.md` / `notes.html`, 2026-11-22) done, the user's browser
 check passed on 2026-11-25 (`docs/manual-test-notes.md`, A1-A6); piece 5
-(acceptance with real notes) measured on 2026-11-25 and **not passed**: with the default settings
-the 3 h lecture stops in the final reduce (`Truncated`); fixes 1-5, 8 and 9 chosen for the next
-piece, 6, 7 and 10 postponed ("Piece 5" in `docs/plan-notes.md`); piece 5b (those fixes) done
-on 2026-11-25, the 3 h lecture finishes with the default settings ("Piece 5b"; A6 point 3 of
-the manual test still to do). Code read aloud
+(acceptance with real notes) failed its first measurement (the 3 h lecture stopped in the final
+reduce, `Truncated`: "Piece 5" in `docs/plan-notes.md`) and **passed with known limits on
+2026-11-25**, after the fixes 1-5, 8 and 9 of piece 5b ("Piece 5b") and A6 of the manual test.
+Real runs on 3h-copy, default settings: A (generation #1 resumed) done in 8 min 04 s, its 15 stored
+maps reused, 3 partial reduces 211 s, final reduce 205 s, token counts 68 s; B (from scratch,
+uninterrupted) done in 15 min 01 s, 15 maps 420 s, 3 partials 211 s, final 203 s, counts 59 s.
+No request failed or was repeated in either; B's 15 maps (and its other answers) are the same
+text as #1's. Known limits: the final reduce overshoots its targets (156 items for 91: fix 10,
+postponed), code extraction in Italian is unstable, fixes 6 (gaps inside a block) and 7 (a resume
+redoes the partial reduces) postponed. Code read aloud
 is written in code form ("ipsilon pred" -> `y_pred`); library names stay as heard
 ("PyTorch.neuralNetwork" is not turned into `torch.nn`); code names not found in the transcript
 get a warning, never a drop. Known limit: recognition errors are not corrected automatically
