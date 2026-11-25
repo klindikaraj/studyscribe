@@ -93,8 +93,8 @@ appendix is a table. If your viewer shows the raw `<details>` instead, note whic
 
 Result (user, 2026-11-25): passed, all 7 seeks (points 1 and 2) land on the right sentence. At
 0:08:14 the voice says "let": "left" is a recognition error of the transcript, not of the seek.
-The links of the coverage warning (point 3) were not reported. `3h-copy-p` was deleted afterwards:
-to repeat this, the notes have to be generated again.
+`3h-copy-p` was deleted afterwards. Still to do: point 3 (the links of the coverage warning), to be
+checked on the page generated again after the fixes of piece 5b.
 
 Prepared on 2026-11-25 in **`3h-copy-p`** (a separate copy of `3h-copy`, with `audio.flac`): with
 the default settings the 3 h generation stops in the final reduce (piece 5), so these notes come
