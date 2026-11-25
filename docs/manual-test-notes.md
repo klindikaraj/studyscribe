@@ -10,7 +10,7 @@ originals (`it`, `3h`). In the commands below, run PowerShell from the repositor
 ## A. Export: notes.html in the browser
 
 Result: A1-A5 passed on `it-copy` by the user on 2026-11-25 (exact seek, `#t=`, questions,
-appendix, banner without audio). A6 still to be done; A7 optional.
+appendix, banner without audio). A6: all 7 seeks passed on the same day (see A6). A7 optional.
 
 Prepared by Claude on 2026-11-22: `it-copy` has two finished generations of notes (qwen3.5:9b,
 prompt v5.1) and `audio.flac`. Claude could check the page only in headless Edge over the
@@ -90,6 +90,11 @@ browser); the answers of the review questions are collapsed under "Mostra la ris
 appendix is a table. If your viewer shows the raw `<details>` instead, note which viewer.
 
 ### A6. The 3 h lecture (after piece 5)
+
+Result (user, 2026-11-25): passed, all 7 seeks (points 1 and 2) land on the right sentence. At
+0:08:14 the voice says "let": "left" is a recognition error of the transcript, not of the seek.
+The links of the coverage warning (point 3) were not reported. `3h-copy-p` was deleted afterwards:
+to repeat this, the notes have to be generated again.
 
 Prepared on 2026-11-25 in **`3h-copy-p`** (a separate copy of `3h-copy`, with `audio.flac`): with
 the default settings the 3 h generation stops in the final reduce (piece 5), so these notes come
