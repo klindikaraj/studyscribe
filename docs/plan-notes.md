@@ -187,16 +187,19 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
   stays the same for the whole run: a different `num_ctx` makes Ollama reload the model.
 - Budget per request: `num_ctx − num_predict − 512` tokens of margin. `num_predict` (output
   cap): 6144 for map, 8192 for reduce with thinking off; 16384 for both with thinking on (a
-  15-minute block went past 6144 while still thinking).
+  15-minute block went past 6144 while still thinking). Since piece 5b the input of every reduce
+  leaves the doubled cap free (16,384; with thinking on the cap itself), so a retry always fits,
+  and the final reduce gets 16,384 at once.
 - Map blocks (10-15 min) are about 2.5-3.6k tokens of transcript plus about 2k of prompt: far
   inside the budget.
 - **Hierarchical reduce.** The single reduce on the 3 h lecture would take about 35-38k tokens
   of map outputs, more than the 32k budget. `plan_reduce` (pure) groups consecutive map outputs
   so that every group fits the budget and the groups are balanced; each group is reduced into
   one partial note with the map schema (refs kept, duplicates merged), and the final reduce
-  works on the partials. More levels if needed. Since small models also lose quality on long
-  inputs, the reduce input is capped at `ollama.reduce_max_input` tokens (default 16k) even when
-  the context is larger. Requests:
+  works on the partials. More levels if needed. Since piece 5b the reduce input is what `num_ctx`
+  leaves (about 14k tokens of notes at 32,768); since small models also lose quality on long
+  inputs, it never goes above 16k (`OLLAMA_REDUCE_MAX_INPUT`) with a larger context. Requests
+  (first plan, 2026-11-09):
   - 3 h lecture: 14 map requests, then 3 partial reduces (groups of 5, 5 and 4 map outputs,
     about 12k tokens each), then 1 final reduce on the 3 partials: 18 requests in all.
   - 20 min lecture: 2 map requests and 1 final reduce (no partials): 3 requests.
@@ -246,8 +249,8 @@ with `nvidia-smi`), so about 10.5 GB for weights, KV cache and buffers.
 
 ### Sampling and determinism
 
-- Thinking off (`think: false`), fixed `seed` (meant to be stored in `options_json`; it is not,
-  see piece 5), sampling from a
+- Thinking off (`think: false`), fixed `seed` (stored in `options_json` since piece 5b,
+  with the Ollama versions), sampling from a
   small per-model table with the values recommended by the model card for non-thinking use.
   Qwen3.5: temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5. Gemma 4: temperature 1.0,
   top_p 0.95, top_k 64.
@@ -469,7 +472,9 @@ on every re-transcription. The code maps `S<n>` to the segment id and its `start
 - Nothing else is dropped: code items with names not in the transcript only get a warning (see
   "Code form and uncertain words").
 - `Truncated` (output cap reached): one more attempt with twice the cap if the context allows
-  it; otherwise, or if it happens again, the generation stops with the error.
+  it (not for the final reduce, which starts with it: piece 5b); otherwise, or if it happens
+  again, the generation stops with the error. The cut text is stored in `llm_calls.output_json`
+  of the `error` row.
 
 ### Code form and uncertain words (revised 2026-11-16)
 
@@ -487,8 +492,10 @@ step 3**. The transcript stays faithful to the audio and so do the notes' words.
 - **Code-name check** (`code_check.py`), a warning only. Every name in a code item (string
   literals and common keywords left out) is split into its words (snake_case, camelCase, dots);
   a word of 3+ letters is *found* when a word of the cited lines ±1 contains it, is at least
-  80% similar to it, or when it is the initials of consecutive words there ("mean squared
-  error" → `MSE`); shorter words (`nn`, `y`, `lr`) are not checked. A name is found when all its
+  80% similar to it (and has 3+ letters too, piece 5b), or when it is the initials of consecutive
+  words there ("mean squared error" → `MSE`); shorter words (`nn`, `y`, `lr`) are not checked.
+  `var`, `let` and `const` must be said there as they are ("let's" does not count), or they are
+  partly found (piece 5b). A name is found when all its
   words are; partly found when some are, or when its words are found only elsewhere in the
   lecture (added in the implementation: `y_pred` cited on "y previsti" while `YPRED` is said
   four lines later); missing when none is found anywhere. The item gets:
@@ -550,7 +557,8 @@ CREATE TABLE generated_notes (
   language          TEXT NOT NULL,
   language_source   TEXT NOT NULL CHECK (language_source IN ('transcript','forced')),
   prompt_version    TEXT NOT NULL,
-  options_json      TEXT NOT NULL,   -- effort, blocks, targets: resume only when equal
+  options_json      TEXT NOT NULL,   -- model, effort, seed...: resume only when equal (except
+                                     -- ollama_versions, only recorded)
   blocks_json       TEXT NOT NULL,
   content_json      TEXT,            -- validated notes, references resolved (segment id + start_ms)
   content_md        TEXT,
@@ -1470,3 +1478,58 @@ Postponed, known limits:
 
 Test data: `3h-copy-p` was deleted after A6 passed (2026-11-25), and `it-copy-tn` too;
 `piece5` holds the backups, the logs and the measuring scripts.
+
+### Piece 5b: fixes 1-5, 8 and 9 (Claude, 2026-11-25)
+
+Done offline, 622 tests pass (585 before); the prompt (v5.1) and the template were not touched.
+**The real run on the copies is still to do.**
+
+Numbers of fix 2, recomputed read-only from `llm_calls` and the `piece5` files (items count the
+summary's sentences; expected tokens = targets x 62.6 in English, 80.6 / 85.1 in Italian):
+
+| Reduce | Items asked → written | Tokens expected → written | Factor (tokens) |
+|---|---|---|---|
+| 3 h, final from the 15 maps (replay) | 91 → 165 (list items 83 → 159, x1.92) | 5,697 → 9,406 | 1.65 |
+| 3h-copy-p, partial 1 / partial 2 | 73 / 64 → ? | 4,570 → 7,110 / 4,007 → 4,359 | 1.56 / 1.09 |
+| 3h-copy-p, final from the 2 partials | list items 83 → 92 | 5,697 → 5,827 | 1.02 |
+| it-copy v1 / v3, final | 35 → 25 / 28 | 2,821 → 1,810 / 2,979 → 2,286 | 0.64 / 0.77 |
+
+The 3 h maps were written at 62.6 tokens per item (19,659 / 314); the compact JSON the code
+counted gives 46.2. The groups of 3h-copy-p are reconstructed (the copy was deleted).
+
+1. The reduce input leaves free the doubled cap (`PipelineOptions.reduce_reserve`): 32,768 -
+   16,384 - 512 - the counted system prompt - 512 of margin, about 14,000 tokens of notes. 16,000
+   stays as an upper bound with larger contexts. With thinking on the cap is already 16,384:
+   only that is reserved and there is no retry in 32k.
+2. Tokens per item counted on the raw answers (one more count per answer, about +10 s on 3 h),
+   `TARGET_OVERSHOOT` 2.0 instead of `OUTPUT_SAFETY` 1.25. A partial group must fit 8,192 even at
+   twice its targets; the final targets must fit 16,384. The final reduce is asked once, with
+   16,384: that room is reserved anyway, `num_predict` allocates nothing, an answer of 9,400
+   tokens is not thrown away (about 165 s), and an endless answer costs 16,384 tokens instead
+   of 8,192 + 16,384.
+   Two changes the tests made necessary: the 1.5 slack of the partial targets is given only at
+   the first level (partials of partials would stay as long as their input), and when no group
+   forms at 8,192 the groups may rely on the retry's 16,384 (a loop without progress otherwise).
+3. `Truncated.text`, stored with the `error` row. The providers promise nothing; the pipeline
+   says "asking again with room for N" only when it does, and why when it stops.
+4. `keep_system_awake` around `notes` and the whole of `transcribe --notes` (`cli.main`), with the
+   recording's warning when Windows refuses. It also stays on while a cloud run waits for the cost
+   confirmation.
+5. `options_json` has `seed` and `ollama_versions`. A resume compares the seed (missing: 1, the
+   only one used until now) and ignores the versions, which it appends: generation #1 of
+   3h-copy resumes with its maps and becomes `["unknown", "0.40.18"]`. Finished generations are not
+   touched; cloud generations have neither key.
+8. On the replayed 3 h notes 6 code items go from `ok` to `check` (39/9/0 → 33/15/0), among them
+   `const lookup` for "bar lookup". Known limits: "let me" counts as `let`, "constant" does not
+   count as `const`, "mese" still matches `MSE`.
+9. Done.
+
+Scan with a fake model (lectures of 75-240 minutes, 61-128 tokens per item, reduces writing 1.0,
+1.65 and 2.0 times their targets): the new sizing finishes wherever the old one did, except
+180 minutes at 83 tokens per item with **every** reduce at 2.0; it adds 5 cases, the real one among
+them. Above 100 tokens per item and 1.65 both stop.
+
+Not verified: the factor holds for qwen3.5:9b with thinking off on these two lectures; that
+`num_predict` does not change the tokens generated (it-copy must repeat version 3's final reduce);
+the estimate shown before a run may say 2 partial reduces instead of 3 (it knows the budget, not
+the speech limit).
