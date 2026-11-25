@@ -355,7 +355,8 @@ class FakeLlm:
 
     `responder(request, index)` returns the answer text for the request number `index` (from 0),
     or raises an LlmError. Every request is kept in `requests`. Usage is a rough 4 characters per
-    token, so tests can check it is passed along."""
+    token, so tests can check it is passed along. An answer longer than the request's output cap
+    is cut there, as a real provider does (`Truncated`, with the text so far)."""
 
     name = "fake"
 
@@ -365,13 +366,17 @@ class FakeLlm:
         self.requests = []
 
     def generate(self, request):
-        from studyscribe.notes.providers.base import LlmResponse, Usage
+        from studyscribe.notes.providers.base import LlmResponse, Truncated, Usage
 
         index = len(self.requests)
         self.requests.append(request)
         text = self.responder(request, index)
+        cap = request.max_output_tokens
         usage = Usage(input_tokens=(len(request.system) + len(request.user)) // 4,
-                      output_tokens=len(text) // 4)
+                      output_tokens=min(len(text) // 4, cap))
+        if len(text) // 4 > cap:
+            raise Truncated(f"The answer was cut at {cap:,} output tokens.", usage=usage,
+                            text=text[:cap * 4])
         return LlmResponse(text=text, usage=usage, model_version=self.model,
                            request_id=f"req-{index}", duration_s=0.01)
 
@@ -445,11 +450,13 @@ def prompt_targets(system: str) -> dict:
     return found
 
 
-def targeted_notes(padding: int = 0, *, ignore_targets_for: int = 0, extra: int = 0):
+def targeted_notes(padding: int = 0, *, ignore_targets_for: int = 0, extra: int = 0,
+                   overshoot=lambda request: 1.0, indent: int | None = None):
     """Responder: Studio notes with as many items per section as the prompt asks for (plus
     `extra`), each padded with `padding` characters, citing the request's own input spread over
     all of it. The first `ignore_targets_for` partial reduces answer as if the targets were
-    three times as large (a model that writes more than asked)."""
+    three times as large (a model that writes more than asked); `overshoot(request)` multiplies
+    the targets of any request. `indent`: the answer as indented JSON, the way qwen writes it."""
     import json
 
     state = {"partials": 0}
@@ -461,6 +468,8 @@ def targeted_notes(padding: int = 0, *, ignore_targets_for: int = 0, extra: int 
             state["partials"] += 1
             if state["partials"] <= ignore_targets_for:
                 targets = {k: v * 3 for k, v in targets.items()}
+        factor = overshoot(request)
+        targets = {k: round(v * factor) for k, v in targets.items()}
         pad = " " + "x" * padding if padding else ""
 
         def ref(i):  # spread over the input, the last line always cited
@@ -484,7 +493,7 @@ def targeted_notes(padding: int = 0, *, ignore_targets_for: int = 0, extra: int 
             "open_points": [{"point": f"Point {i}{pad}", "refs": [ref(i)]}
                             for i in range(targets.get("open_points", 0))],
         }
-        return json.dumps(data)
+        return json.dumps(data, indent=indent)
 
     return respond
 

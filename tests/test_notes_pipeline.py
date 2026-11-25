@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -60,7 +61,8 @@ def test_two_blocks_map_then_final_reduce():
     assert first_map.user.startswith("[0:00:00]\nS1 frase numero 1")
     assert "Part 2 of 2" in second_map.system
     assert reduce.user.startswith('[{"part":1,')
-    assert first_map.max_output_tokens == 6144 and reduce.max_output_tokens == 8192
+    # the final reduce gets at once the whole room reserved for a long answer (piece 5b)
+    assert first_map.max_output_tokens == 6144 and reduce.max_output_tokens == 16384
     assert first_map.effort == "none"
     assert set(result.map_answers) == {1, 2}
     assert result.stats["requests"] == 3 and result.stats["resumed_blocks"] == 0
@@ -172,6 +174,51 @@ def test_truncated_without_room_for_a_larger_cap_stops():
         run(responder, options=small)
 
 
+def test_a_truncated_answer_is_stored_and_the_retry_announced():
+    progress = []
+
+    def responder(request, index):
+        if index == 0:
+            raise Truncated("cut", usage=Usage(100, 6144), text='{"summary": "hal')
+        return echo_notes(request, index)
+
+    _, _, calls, _ = run(responder, on_progress=progress.append)
+    assert (calls[0].status, calls[0].output_json) == ("error", '{"summary": "hal')
+    assert "the answer was cut at 6,144 tokens: asking again with room for 12,288" in progress
+
+
+@pytest.mark.parametrize("changes, why", [
+    ({"max_input_tokens": lambda cap: 32768 - cap - 512 if cap < 12000 else 10},
+     "context does not leave"),
+    ({}, "twice the normal answer"),  # the retry was possible, and it was cut too
+])
+def test_a_run_that_stops_never_promises_another_try(changes, why):
+    progress, calls = [], []
+
+    def responder(request, index):
+        raise Truncated("cut", text="{")
+
+    lines = lecture_lines(24)
+    with pytest.raises(Truncated) as info:
+        generate_notes(FakeLlm(responder), STUDIO, lines, cut_blocks(lines), LECTURE,
+                       options=options(**changes), on_call=calls.append,
+                       on_progress=progress.append)
+    message = info.value.user_message()
+    assert why in message and "asks again" not in message
+    # announced only when it was really sent
+    assert sum("asking again" in p for p in progress) == len(calls) - 1
+    assert all(c.output_json == "{" for c in calls)
+
+
+def test_a_truncation_while_thinking_keeps_the_providers_remedy():
+    def responder(request, index):
+        raise Truncated("cut while still thinking", remedy="Use --effort none.")
+
+    with pytest.raises(Truncated) as info:
+        run(responder)
+    assert info.value.remedy == "Use --effort none."
+
+
 def test_transient_errors_are_retried_and_recorded():
     waits = []
 
@@ -218,7 +265,9 @@ def test_long_lecture_uses_partial_reduces():
 def test_final_targets_are_scaled_down_when_the_answer_would_not_fit():
     progress = []
     result, llm, calls, _ = run(targeted_notes(padding=600), minutes=75,
-                                options=options(reduce_max_input=40_000),
+                                options=options(
+                                    reduce_max_input=40_000,
+                                    max_input_tokens=lambda cap: 65_536 - cap - 512),
                                 on_progress=progress.append)
     scaled = result.stats["reduce"]["final_targets_scaled"]
     assert 0 < scaled < 1
@@ -292,6 +341,154 @@ def test_partial_groups_stay_under_the_output_cap():
     for call in calls:
         if call.stage in ("partial", "reduce"):
             assert call.usage.output_tokens <= 3000
+
+
+# --- the real numbers of piece 5 (3h-copy, 2026-11-25) --------------------------------------------
+#
+# One reduce of all the maps: about 16,100 tokens in; the model writes 1.65 times the expected
+# tokens (9,406), over the 8,192 cap; a retry at 16,384 leaves 15,872 tokens for the input.
+
+
+def one_shot(system):
+    """A final reduce that reads many maps at once, not the notes of a few partial reduces."""
+    return ("into the final study notes" in system
+            and int(re.search(r"the notes of (\d+) consecutive parts", system)[1]) > 6)
+
+
+def piece5_notes(final_overshoot=1.02):
+    def overshoot(request):
+        if "longer part" in request.system:
+            return 1.56
+        if "into the final study notes" in request.system:
+            return 1.7 if one_shot(request.system) else final_overshoot
+        return 1.0
+
+    return targeted_notes(padding=133, overshoot=overshoot, indent=3)
+
+
+def run_piece5(responder, **changes):
+    lines = lecture_lines(180)
+    llm = FakeLlm(responder)
+    calls, progress = [], []
+    result = generate_notes(llm, STUDIO, lines, cut_blocks(lines), LECTURE,
+                            options=options(**changes), on_call=calls.append,
+                            on_progress=progress.append)
+    return result, llm, calls, progress
+
+
+def reduce_requests(llm):
+    return [r for r in llm.requests if r.user.startswith('[{"part"')]
+
+
+def test_piece5_fixture_has_the_real_sizes():
+    # no limit on the input: one final reduce of all the maps, as in piece 5
+    _, llm, calls, _ = run_piece5(piece5_notes(), max_input_tokens=lambda cap: 200_000,
+                                  reduce_max_input=200_000, reduce_output_tokens=50_000)
+    reduce = llm.requests[-1]
+    maps = [json.loads(c.output_json) for c in calls if c.stage == "map"]
+    items = sum(count_items(notes) for notes in maps)
+    assert one_shot(reduce.system)
+    assert llm.count_tokens(reduce.system, reduce.user) == pytest.approx(16_092, abs=300)
+    assert calls[-1].usage.output_tokens == pytest.approx(9_406, abs=300)
+    written = sum(c.usage.output_tokens for c in calls if c.stage == "map")
+    assert written / items == pytest.approx(62.6, abs=3)  # as written, indentation included
+    compact = sum(len(json.dumps(n, separators=(",", ":"))) // 4 for n in maps)
+    assert compact / items == pytest.approx(46.2, abs=3)  # what was counted until piece 5
+
+
+def test_piece5_three_hours_finish_with_the_default_settings():
+    result, llm, calls, progress = run_piece5(piece5_notes())
+    assert {c.status for c in calls} == {"ok"}
+    assert result.stats["reduce"]["partial"] >= 2
+    assert all(r.input_tokens <= 32768 - 16384 - 512 for r in reduce_requests(llm))
+    assert "final_targets_scaled" not in result.stats["reduce"]  # asked in full
+    assert not any("asking again" in p for p in progress)
+
+
+def test_piece5_a_long_final_answer_is_not_cut():
+    # the final reduce writes 9,400 tokens from the partial notes too
+    _, llm, calls, progress = run_piece5(piece5_notes(final_overshoot=1.7))
+    assert [c.status for c in calls if c.stage == "reduce"] == ["ok"]
+    assert calls[-1].usage.output_tokens == pytest.approx(9_406, abs=300)
+    assert llm.requests[-1].max_output_tokens == 16_384
+    assert not any("asking again" in p for p in progress)
+
+
+@pytest.mark.parametrize("num_ctx", [32_768, 65_536])  # with 65,536 a retry would even fit
+def test_a_final_reduce_that_never_ends_is_asked_once(num_ctx):
+    notes = piece5_notes()
+
+    def responder(request, index):
+        if "into the final study notes" in request.system:
+            return '{"summary": "' + "x" * 80_000
+        return notes(request, index)
+
+    lines = lecture_lines(180)
+    calls, progress = [], []
+    with pytest.raises(Truncated) as info:
+        generate_notes(FakeLlm(responder), STUDIO, lines, cut_blocks(lines), LECTURE,
+                       options=options(max_input_tokens=lambda cap: num_ctx - cap - 512),
+                       on_call=calls.append, on_progress=progress.append)
+    final = [c for c in calls if c.stage == "reduce"]
+    assert len(final) == 1 and len(final[0].output_json) == 16_384 * 4
+    assert not any("asking again" in p for p in progress)
+    assert info.value.remedy and "asks again" not in info.value.user_message()
+
+
+def test_a_partial_reduce_cut_at_the_cap_is_asked_again_and_fits():
+    notes = piece5_notes()
+    cut = []
+
+    def responder(request, index):
+        if "longer part" in request.system and not cut:
+            cut.append(index)
+            raise Truncated("cut", text="{")
+        return notes(request, index)
+
+    _, llm, calls, progress = run_piece5(responder)
+    partial = [r for r in llm.requests if "longer part" in r.system]
+    assert [r.max_output_tokens for r in partial[:2]] == [8192, 16384]
+    assert partial[0].user == partial[1].user
+    assert any("asking again with room for 16,384" in p for p in progress)
+    assert (calls[-1].stage, calls[-1].status) == ("reduce", "ok")
+
+
+def test_partial_groups_leave_room_for_answers_twice_their_targets():
+    # every partial reduce writes twice what it is asked: never cut
+    notes = targeted_notes(padding=133, indent=3,
+                           overshoot=lambda r: 2.0 if "longer part" in r.system else 1.0)
+    _, _, calls, progress = run_piece5(notes)
+    partial = [c for c in calls if c.stage == "partial"]
+    assert partial and {c.status for c in partial} == {"ok"}
+    assert max(c.usage.output_tokens for c in partial) <= 8192
+    assert not any("asking again" in p for p in progress)
+
+
+def test_a_larger_context_keeps_the_input_limit():
+    _, llm, _, _ = run_piece5(piece5_notes(), max_input_tokens=lambda cap: 65_536 - cap - 512)
+    assert all(llm.count_tokens("", r.user) <= 16_000 for r in reduce_requests(llm))
+
+
+def test_thinking_still_runs_in_a_32k_context():
+    # with thinking on the cap (16,384) is the reserve: doubling it would leave no input
+    result, llm, _, _ = run_piece5(piece5_notes(), effort="high")
+    assert {r.max_output_tokens for r in llm.requests} == {16_384}
+    assert result.notes["outline"]
+
+
+def test_the_tokens_per_item_are_those_of_the_answers_as_written():
+    result, _, _, _ = run_piece5(piece5_notes())
+    assert result.stats["reduce"]["tokens_per_item"] == pytest.approx(62.6, abs=3)
+
+
+def test_resumed_maps_are_sized_like_fresh_ones():
+    first, _, _, _ = run_piece5(piece5_notes())
+    lines = lecture_lines(180)
+    calls = []
+    again = generate_notes(FakeLlm(piece5_notes()), STUDIO, lines, cut_blocks(lines), LECTURE,
+                           options=options(), done_maps=first.map_answers, on_call=calls.append)
+    assert "map" not in {c.stage for c in calls}
+    assert again.stats["reduce"] == first.stats["reduce"]
 
 
 def test_count_items():

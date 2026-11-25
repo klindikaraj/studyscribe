@@ -11,7 +11,8 @@ For every request:
   lines cited in its input. Invalid ones are dropped and counted; above a quarter invalid, the
   answer is not trusted and the request is sent again like an invalid one;
 - `Truncated` (the output cap was reached): sent once more with twice the cap when the context
-  allows it, otherwise the generation stops;
+  allows it, otherwise the generation stops. The input of every reduce leaves that room free
+  (thinking off); the final reduce, which may write far more than it is asked, gets it at once;
 - transient provider errors are retried by retry.py; any other provider error stops the
   generation (the work done so far is in the calls already reported).
 
@@ -22,10 +23,11 @@ The reduce works on counted tokens, never on the estimate (estimate.py is only f
 before a run): every part's notes are counted by the provider as the reduce input holds them,
 the reduce system prompt is counted, and every reduce request is counted before it is sent
 (and refused if it does not fit). The expected answer of a reduce is its targets times the
-tokens per item measured on the parts, times OUTPUT_SAFETY: a partial group never covers more
-speech than an answer under the output cap can hold, and the final targets are scaled down
-(with a warning) when the template asks for more than one answer can hold. Parts too large to
-pair are shortened one by one rather than stopping the run.
+tokens per item counted on the parts' answers as the model wrote them (indented JSON), times
+TARGET_OVERSHOOT: a partial group never covers more speech than an answer under the output cap
+can hold, and the final targets are scaled down (with a warning) when the template asks for more
+than one answer can hold. Parts too large to pair are shortened one by one rather than stopping
+the run.
 """
 
 from __future__ import annotations
@@ -68,9 +70,12 @@ DEFAULT_NUM_CTX = 32768
 MARGIN_TOKENS = 512
 PART_OVERHEAD_TOKENS = 20  # {"part":1,"from":"0:00:09","to":"0:12:41","notes":...}
 MIN_COVERAGE = 0.85  # share of a block's lines up to the last one a map answer cites
-OUTPUT_SAFETY = 1.25  # expected reduce answers: measured tokens per item times this
+# How far past its targets a reduce may write. Measured in piece 5 (qwen3.5:9b, 2026-11-25): up to
+# 1.92 times the items asked for (159 list items for 83) and 1.65 times the expected tokens.
+TARGET_OVERSHOOT = 2.0
 ANSWER_OVERHEAD_TOKENS = 50  # braces and keys of an answer
-REQUEST_MARGIN_TOKENS = 256  # the counted reduce system prompt versus the one actually sent
+# The counted reduce system prompt versus the one sent, plus the feedback of a retry.
+REQUEST_MARGIN_TOKENS = 512
 _SENTENCE = re.compile(r"[^.!?]+[.!?]")
 
 
@@ -106,7 +111,8 @@ class PipelineOptions:
     thinking_output_tokens: int = 16384  # any request with thinking on (a block went past 6144)
     # Input tokens one request may have for a given output cap (Ollama: provider.budget).
     max_input_tokens: Callable[[int], int] = _default_max_input
-    reduce_max_input: int = 16_000  # small models lose quality on long inputs
+    # Upper bound (small models lose quality on long inputs); the context usually allows less.
+    reduce_max_input: int = 16_000
     chars_per_token: float = 2.5  # conservative, to size reduce groups
     validation_retries: int = 2
     max_levels: int = 4  # partial-reduce levels
@@ -119,6 +125,12 @@ class PipelineOptions:
         if self.effort != "none":
             return self.thinking_output_tokens
         return self.map_output_tokens if stage == "map" else self.reduce_output_tokens
+
+    def reduce_reserve(self) -> int:
+        """Output tokens the input of a reduce must leave free: the doubled cap of a retry. With
+        thinking on the cap alone, already that large: doubled it would fill a 32k context."""
+        cap = self.output_cap("reduce")
+        return 2 * cap if self.effort == "none" else cap
 
 
 @dataclass(frozen=True)
@@ -134,7 +146,7 @@ class CallRecord:
     model_version: str | None = None
     request_id: str | None = None
     timings: Timings | None = None
-    output_json: str | None = None  # the raw answer
+    output_json: str | None = None  # the raw answer; with 'error', the text of a cut one
     error: str | None = None
 
 
@@ -183,6 +195,7 @@ class _Part:
     notes: PartNotes
     speech_ms: int
     tokens: int  # counted by the provider on the JSON the reduce input holds, plus overhead
+    written: int  # counted on the answer as the model wrote it
     items: int  # list items plus summary sentences
 
 
@@ -252,10 +265,10 @@ class _Run:
         resumed = 0
         for block in blocks:
             allowed = range(block.first_n, block.last_n + 1)
-            notes = self._resume(done_maps.get(block.index), allowed)
+            raw = done_maps.get(block.index)
+            notes = self._resume(raw, allowed)
             if notes is not None:
                 resumed += 1
-                map_answers[block.index] = done_maps[block.index]
             else:
                 self.progress(f"map {block.index}/{len(blocks)}")
                 # The block's duration, not its speech: v5 with speech-based targets asked for
@@ -265,13 +278,13 @@ class _Run:
                                     parts=len(blocks), targets=targets, title=self.lecture.title,
                                     course=self.lecture.course, language=self.lecture.language)
                 notes, raw = self._ask("map", block.index, prompt, allowed)
-                map_answers[block.index] = raw
+            map_answers[block.index] = raw
             gap = coverage_gap(notes.model_dump(), block)
             if gap is not None:
                 coverage.append(gap)
                 self.progress(f"warning: {gap.describe()}")
             parts.append(self._part(PartNotes(block.start_ms, block.end_ms,
-                                              notes.model_dump()), block.speech_ms))
+                                              notes.model_dump()), raw, block.speech_ms))
         final = self._reduce(parts)
         by_n = {line.n: line for line in lines}
         code_keys = [s.key for s in self.template.sections if s.kind == "examples"]
@@ -297,7 +310,8 @@ class _Run:
         self.total_speech_ms = sum(part.speech_ms for part in parts)
         cap = self.options.output_cap("reduce")
         final_targets = self.template.targets(self.total_speech_ms, whole_lecture=True)
-        final_targets = self._fit_final_targets(final_targets, parts, cap)
+        final_targets = self._fit_final_targets(final_targets, parts,
+                                                self.options.reduce_reserve())
         number = 0
         for level in range(self.options.max_levels + 1):
             budget = self._reduce_budget()
@@ -308,13 +322,21 @@ class _Run:
                 raise NotesError(f"The notes still do not fit one request after "
                                  f"{self.options.max_levels} levels of partial reduces.",
                                  remedy="Lower the template's maxima, or use a larger context.")
-            limit = self._max_group_speech(parts, cap)
-            try:
-                groups = plan_groups(sizes, budget, weights=[p.speech_ms for p in parts],
-                                     weight_limit=limit)
-            except ReduceTooLarge:
-                groups = [[i] for i in range(len(parts))]
-            if all(len(group) == 1 for group in groups):
+            # Room to choose only once: with it again, partial notes of partial notes would be as
+            # long as their input, and never fit.
+            slack = PARTIAL_SLACK if level == 0 else 1.0
+            # Answers that fit the cap even past their targets; when that keeps every part apart,
+            # answers that fit the retry's cap (with thinking on the two are the same).
+            for room in (cap, self.options.reduce_reserve()):
+                limit = self._max_group_speech(parts, room, slack)
+                try:
+                    groups = plan_groups(sizes, budget, weights=[p.speech_ms for p in parts],
+                                         weight_limit=limit)
+                except ReduceTooLarge:
+                    groups = [[i] for i in range(len(parts))]
+                if any(len(group) > 1 for group in groups):
+                    break
+            else:
                 parts, number = self._shorten(parts, budget, number)
                 continue
             merged: list[_Part] = []
@@ -326,7 +348,7 @@ class _Run:
                 inputs = [parts[i] for i in group]
                 speech = sum(part.speech_ms for part in inputs)
                 self.progress(f"partial reduce {number}")
-                targets = self.template.partial_targets(speech, self.total_speech_ms)
+                targets = self.template.partial_targets(speech, self.total_speech_ms, slack)
                 merged.append(self._reduce_request("partial", number, inputs, targets,
                                                    speech)[0])
                 self.reduce_stats["partial"] += 1
@@ -344,7 +366,7 @@ class _Run:
             return targets
         items = sum(targets.values())
         room_items = (cap - ANSWER_OVERHEAD_TOKENS) / (self._tokens_per_item(parts)
-                                                      * OUTPUT_SAFETY)
+                                                      * TARGET_OVERSHOOT)
         factor = room_items / items
         scaled = {s.key: max(min(1, s.min), math.floor(targets[s.key] * factor))
                   for s in self.template.sections}
@@ -387,9 +409,9 @@ class _Run:
                                targets=targets, title=self.lecture.title,
                                course=self.lecture.course, language=self.lecture.language)
         allowed = refs_in(part.notes.notes for part in inputs)
-        notes, _ = self._ask(stage, number, prompt, allowed, count_input=True)
+        notes, raw = self._ask(stage, number, prompt, allowed, count_input=True)
         part = self._part(PartNotes(inputs[0].notes.start_ms, inputs[-1].notes.end_ms,
-                                    notes.model_dump()), speech_ms)
+                                    notes.model_dump()), raw, speech_ms)
         return part, notes
 
     # --- one request -----------------------------------------------------------------------------
@@ -400,9 +422,12 @@ class _Run:
         request's tokens with the provider and refuse it if it does not fit (reduces, whose
         size is planned on counted tokens)."""
         cap = self.options.output_cap(stage)
+        enlarged = False
+        if stage == "reduce" and self.options.reduce_reserve() > cap:
+            # Its input leaves this room anyway: a long answer is not cut and asked again.
+            cap, enlarged = self.options.reduce_reserve(), True
         attempt = 0
         problems = 0
-        enlarged = False
         feedback = ""
         while True:
             counted = None
@@ -426,6 +451,7 @@ class _Run:
 
             def failed(error: LlmError, _: int) -> None:
                 self.on_call(CallRecord(stage, number, attempt, "error", error.usage, None,
+                                        output_json=getattr(error, "text", None),
                                         error=error.user_message()))
 
             try:
@@ -433,12 +459,21 @@ class _Run:
                     send, policy=self.options.retry_policy, pacer=self.options.pacer,
                     sleep=self.options.sleep, rng=self.options.rng, on_error=failed,
                     on_wait=lambda reason, s: self.progress(f"waiting {s:.0f} s ({reason})"))
-            except Truncated:
+            except Truncated as error:
                 larger = cap * 2
                 needed = (request.input_tokens if request.input_tokens is not None
                           else self._estimate(request))
                 if enlarged or needed > self.options.max_input_tokens(larger):
+                    if not error.remedy:
+                        why = (f"It already had room for twice the normal answer ({cap:,} "
+                               "tokens). Use" if enlarged else
+                               f"Asking again needs {larger:,} tokens for the answer, which the "
+                               "context does not leave. Use a larger context,")
+                        error.remedy = (f"{why} another model or a template with fewer items. "
+                                        "The cut text is stored with the call.")
                     raise
+                self.progress(f"the answer was cut at {cap:,} tokens: asking again with room "
+                              f"for {larger:,}")
                 cap, enlarged = larger, True
                 continue
             problem, notes, report = self._check(response.text, allowed)
@@ -495,31 +530,32 @@ class _Run:
                                policy=self.options.retry_policy, sleep=self.options.sleep,
                                rng=self.options.rng)
 
-    def _part(self, notes: PartNotes, speech_ms: int) -> _Part:
+    def _part(self, notes: PartNotes, raw: str, speech_ms: int) -> _Part:
         text = json.dumps(notes.notes, ensure_ascii=False, separators=(",", ":"))
         return _Part(notes, speech_ms, self._count("", text) + PART_OVERHEAD_TOKENS,
-                     count_items(notes.notes))
+                     self._count("", raw), count_items(notes.notes))
 
     def _tokens_per_item(self, parts: Sequence[_Part]) -> float:
-        tokens = sum(part.tokens - PART_OVERHEAD_TOKENS for part in parts)
+        tokens = sum(part.written for part in parts)
         items = sum(part.items for part in parts)
         value = tokens / items if items else 100.0
         self.reduce_stats["tokens_per_item"] = round(value, 1)
         return value
 
     def _expected_output(self, targets: Mapping[str, int], parts: Sequence[_Part]) -> int:
-        """Answer tokens for these targets at the tokens per item measured on the parts."""
+        """Answer tokens for these targets at the tokens per item measured on the parts, if the
+        model writes TARGET_OVERSHOOT times as many items."""
         items = sum(targets.values())
-        return math.ceil(items * self._tokens_per_item(parts) * OUTPUT_SAFETY
+        return math.ceil(items * self._tokens_per_item(parts) * TARGET_OVERSHOOT
                          + ANSWER_OVERHEAD_TOKENS)
 
-    def _max_group_speech(self, parts: Sequence[_Part], cap: int) -> int:
+    def _max_group_speech(self, parts: Sequence[_Part], cap: int, slack: float) -> int:
         """The most speech a partial reduce may cover with its expected answer under `cap`
         (its targets grow with the speech)."""
         low, high = 0, self.total_speech_ms
         while low < high:
             middle = (low + high + 1) // 2
-            targets = self.template.partial_targets(middle, self.total_speech_ms, PARTIAL_SLACK)
+            targets = self.template.partial_targets(middle, self.total_speech_ms, slack)
             if self._expected_output(targets, parts) <= cap:
                 low = middle
             else:
@@ -528,7 +564,8 @@ class _Run:
 
     def _reduce_budget(self) -> int:
         """Input-note tokens one reduce request may hold: what the context leaves after the
-        counted system prompt and the answer, never more than `reduce_max_input`."""
+        counted system prompt and the longest answer a retry may write (`reduce_reserve`),
+        never more than `reduce_max_input`."""
         if self._system_tokens is None:
             targets = self.template.targets(self.total_speech_ms, whole_lecture=True)
             system = reduce_prompt(self.template, [PartNotes(0, 0, {})], final=True,
@@ -536,8 +573,8 @@ class _Run:
                                    course=self.lecture.course,
                                    language=self.lecture.language).system
             self._system_tokens = self._count(system, "") + REQUEST_MARGIN_TOKENS
-        cap = self.options.output_cap("reduce")
-        room = self.options.max_input_tokens(cap) - self._system_tokens
+        room = (self.options.max_input_tokens(self.options.reduce_reserve())
+                - self._system_tokens)
         budget = min(self.options.reduce_max_input, room)
         if budget <= 0:
             raise NotesError("The context is too small for the reduce prompt.",
