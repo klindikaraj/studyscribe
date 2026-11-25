@@ -491,6 +491,18 @@ def test_resumed_maps_are_sized_like_fresh_ones():
     assert again.stats["reduce"] == first.stats["reduce"]
 
 
+@pytest.mark.parametrize("minutes", [24, 180])  # without and with partial reduces
+def test_the_final_answer_is_not_counted(minutes):
+    # nothing uses its size, and with Ollama each count takes seconds
+    llm = FakeLlm(piece5_notes())
+    count, sent = llm.count_tokens, []
+    llm.count_tokens = lambda system, user: (sent.append(len(llm.requests)), count(system, user))[1]
+    lines = lecture_lines(minutes)
+    generate_notes(llm, STUDIO, lines, cut_blocks(lines), LECTURE, options=options())
+    assert "into the final study notes" in llm.requests[-1].system
+    assert max(sent) == len(llm.requests) - 1  # the last count is the final request's input
+
+
 def test_count_items():
     assert count_items({"summary": "One. Two! Three?", "outline": [1, 2], "x": []}) == 5
     assert count_items({"summary": "no full stop"}) == 1
