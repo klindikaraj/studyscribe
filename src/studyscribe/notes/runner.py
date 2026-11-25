@@ -32,6 +32,7 @@ from studyscribe.notes import pricing
 from studyscribe.notes.blocks import Block, cut_blocks
 from studyscribe.notes.estimate import Assumptions, Estimate, estimate_notes
 from studyscribe.notes.pipeline import (
+    MARGIN_TOKENS,
     CallRecord,
     Lecture,
     NotesError,
@@ -47,6 +48,7 @@ from studyscribe.notes.prompts import (
     reduce_prompt,
 )
 from studyscribe.notes.providers.base import Effort, LlmError, LlmProvider
+from studyscribe.notes.providers.ollama import DEFAULT_SEED
 from studyscribe.notes.providers.retry import Pacer
 from studyscribe.notes.templates import (
     DEFAULT_TEMPLATE,
@@ -63,7 +65,7 @@ MIN_SPEECH_MS = 5 * 60_000
 MIN_NUM_CTX = 32_768  # below it the reduce of a 3-hour lecture does not converge
 CLOUD_MAX_INPUT = 90_000  # tokens per request for the cloud providers (plan: the 90k guard)
 CLOUD_REDUCE_MAX_INPUT = 60_000
-OLLAMA_REDUCE_MAX_INPUT = 16_000
+OLLAMA_REDUCE_MAX_INPUT = 16_000  # upper bound: at 32,768 the context leaves about 14,000
 GEMINI_FREE_RPM = 5
 DEFAULT_EFFORT: dict[str, Effort] = {"ollama": "none", "gemini": "medium",
                                      "anthropic": "medium"}
@@ -197,8 +199,8 @@ def check_provider(provider: LlmProvider, request: NotesRequest) -> str:
         if num_ctx < MIN_NUM_CTX:
             raise CannotGenerate(
                 f"ollama.num_ctx is {num_ctx:,}: with less than {MIN_NUM_CTX:,} tokens of "
-                "context the reduce of a long lecture does not converge (its input budget must "
-                "stay well above the final answer of up to 8,192 tokens). Set it back with: "
+                "context the reduce of a long lecture does not converge (16,384 of them stay "
+                "free for its answer). Set it back with: "
                 f"studyscribe config set ollama.num_ctx {MIN_NUM_CTX}")
     return provider.check()
 
@@ -212,16 +214,38 @@ def pipeline_options(provider: LlmProvider, request: NotesRequest) -> PipelineOp
                            reduce_max_input=CLOUD_REDUCE_MAX_INPUT, pacer=pacer)
 
 
-def run_options(prepared: Prepared) -> dict[str, Any]:
-    """Everything that shapes a generation's output: it is resumed only if these match."""
+def run_options(prepared: Prepared, provider: LlmProvider) -> dict[str, Any]:
+    """What shapes a generation's output; it is resumed only if these match (`_comparable`).
+    With Ollama also the sampling seed and the server's version: the same seed gives another
+    answer on another version (piece 5)."""
     request = prepared.request
+    ollama = ({"seed": provider.options.seed, "ollama_versions": [provider.server_version()]}
+              if hasattr(provider, "server_version") else {})
     return {
         "provider": request.provider, "model": request.model, "effort": request.effort,
         "num_ctx": request.num_ctx if request.provider == "ollama" else None,
         "template": prepared.template.to_json(), "language": prepared.language,
         "prompt_version": PROMPT_VERSION, "prompt_hash": prompt_hash(),
         "transcript_run_id": prepared.transcript_run_id,
+        **ollama,
     }
+
+
+def _comparable(options: dict[str, Any]) -> dict[str, Any]:
+    """The options a resume compares. Generations from before the seed was stored used
+    DEFAULT_SEED; the Ollama version is only recorded, so an update that installs itself between
+    two runs does not throw the maps away."""
+    return {**options, "seed": options.get("seed", DEFAULT_SEED), "ollama_versions": None}
+
+
+def _resumed_options(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """The options to store on a resume: the versions of every run so far, in order."""
+    if "ollama_versions" not in new:
+        return old
+    versions = list(old.get("ollama_versions", ["unknown"]))
+    if versions[-1] != new["ollama_versions"][0]:
+        versions += new["ollama_versions"]
+    return {**new, "ollama_versions": versions}
 
 
 # --- generation ----------------------------------------------------------------------------------
@@ -245,7 +269,8 @@ def generate_session_notes(conn: sqlite3.Connection, data_dir: Path, prepared: P
     notes_id = None
     counting = _CountingProvider(provider)
     try:
-        notes_id, done_maps = _open_generation(conn, prepared, emit)
+        notes_id, done_maps = _open_generation(conn, prepared, run_options(prepared, provider),
+                                               emit)
         started = time.perf_counter()
 
         def on_call(record: CallRecord) -> None:
@@ -286,18 +311,22 @@ def generate_session_notes(conn: sqlite3.Connection, data_dir: Path, prepared: P
         lock.release()
 
 
-def _open_generation(conn: sqlite3.Connection, prepared: Prepared,
+def _open_generation(conn: sqlite3.Connection, prepared: Prepared, options: dict[str, Any],
                      emit: Emit) -> tuple[int, dict[int, str]]:
     """(generation id, accepted map answers to reuse): the open generation when its options
     match and there is no --restart, else a new one (the old one is kept as 'failed')."""
-    options_json = json.dumps(run_options(prepared), sort_keys=True)
+    options_json = json.dumps(options, sort_keys=True)
     blocks_json = json.dumps([[b.first_n, b.last_n] for b in prepared.blocks])
     with transaction(conn):
         old = repo.get_open_notes(conn, prepared.session_id)
         if old is not None:
-            same = (old["options_json"], old["blocks_json"]) == (options_json, blocks_json)
+            old_options = json.loads(old["options_json"])
+            same = (_comparable(old_options) == _comparable(options)
+                    and old["blocks_json"] == blocks_json)
             if same and not prepared.request.restart:
                 repo.set_notes_status(conn, old["id"], "running")
+                repo.set_notes_options(conn, old["id"], json.dumps(
+                    _resumed_options(old_options, options), sort_keys=True))
                 done = repo.accepted_map_answers(conn, old["id"])
                 emit("resumed", notes_id=old["id"], maps=len(done),
                      blocks=len(prepared.blocks))
@@ -416,8 +445,8 @@ def _estimate(template: Template, blocks: list[Block], lecture: Lecture, request
                            targets=template.targets(0, whole_lecture=True), title=lecture.title,
                            course=lecture.course, language=lecture.language).system
     if request.provider == "ollama":
-        cap = 16_384 if request.effort != "none" else 8_192
-        room = (request.num_ctx or MIN_NUM_CTX) - cap - 512
+        room = ((request.num_ctx or MIN_NUM_CTX) - MARGIN_TOKENS
+                - PipelineOptions(effort=request.effort).reduce_reserve())
         budget = min(OLLAMA_REDUCE_MAX_INPUT, room - int(len(system) / assumptions.chars_per_token))
     else:
         budget = CLOUD_REDUCE_MAX_INPUT

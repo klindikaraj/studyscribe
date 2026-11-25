@@ -359,6 +359,11 @@ def set_notes_status(conn: sqlite3.Connection, notes_id: int, status: str,
                  (status, error, finished, notes_id))
 
 
+def set_notes_options(conn: sqlite3.Connection, notes_id: int, options_json: str) -> None:
+    conn.execute("UPDATE generated_notes SET options_json = ? WHERE id = ?",
+                 (options_json, notes_id))
+
+
 def finish_notes(conn: sqlite3.Connection, notes_id: int, *, content_json: str,
                  uncertain_json: str, stats_json: str, content_md: str | None = None) -> None:
     conn.execute(

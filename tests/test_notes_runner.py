@@ -2,12 +2,13 @@
 restart, lock. Fake LLM: no network, no model."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from fakes import FakeLlm, echo_notes
 
 from studyscribe.db import repo
-from studyscribe.notes.providers.base import BadRequest
+from studyscribe.notes.providers.base import BadRequest, Truncated
 from studyscribe.notes.runner import (
     CannotGenerate,
     NotesRequest,
@@ -152,6 +153,99 @@ def test_restart_and_different_options_discard_the_open_generation(db, data_dir,
     assert repo.get_notes(db, second)["error"] == "discarded: --restart"
     assert ("discarded", {"notes_id": second, "reason": "--restart"}) in events
     assert len(repo.list_notes_by_status(db, "failed")) == 2  # every generation is kept
+
+
+class FakeOllamaLlm(FakeLlm):
+    """A FakeLlm with what Ollama tells about itself: its seed and its server version."""
+
+    def __init__(self, responder, seed=1, version="0.40.18"):
+        super().__init__(responder)
+        self.options = SimpleNamespace(seed=seed)
+        self.version = version
+
+    def server_version(self):
+        return self.version
+
+
+def ollama_run(db, data_dir, sid, responder=echo_notes, **kwargs):
+    events = []
+    result = generate_session_notes(db, data_dir, prepare(db, sid, REQUEST),
+                                    FakeOllamaLlm(responder, **kwargs),
+                                    emit=lambda kind, **info: events.append((kind, info)))
+    return result, events
+
+
+def stored_options(db, notes_id):
+    return json.loads(repo.get_notes(db, notes_id)["options_json"])
+
+
+def open_generation(db, data_dir, sid):
+    def stop_at_second_map(request, index):
+        if index == 1:
+            raise KeyboardInterrupt
+        return echo_notes(request, index)
+
+    with pytest.raises(KeyboardInterrupt):
+        ollama_run(db, data_dir, sid, stop_at_second_map)
+    return repo.get_open_notes(db, sid)["id"]
+
+
+def test_seed_and_ollama_version_are_stored(db, data_dir, transcribed):
+    result, _ = ollama_run(db, data_dir, transcribed())
+    options = stored_options(db, result.notes_id)
+    assert options["seed"] == 1 and options["ollama_versions"] == ["0.40.18"]
+    result, _, _ = generate(db, data_dir, transcribed())  # a provider without them (cloud)
+    assert not {"seed", "ollama_versions"} & stored_options(db, result.notes_id).keys()
+
+
+def test_an_open_generation_older_than_the_stored_seed_is_resumed(db, data_dir, transcribed):
+    # like generation #1 of 3h-copy: the same options, without seed and versions
+    sid = transcribed()
+    notes_id = open_generation(db, data_dir, sid)
+    old = stored_options(db, notes_id)
+    old.pop("seed", None)
+    old.pop("ollama_versions", None)
+    db.execute("UPDATE generated_notes SET options_json = ? WHERE id = ?",
+               (json.dumps(old, sort_keys=True), notes_id))
+    result, events = ollama_run(db, data_dir, sid)
+    assert result.notes_id == notes_id and result.resumed_blocks == 1
+    assert events[0][0] == "resumed"
+    options = stored_options(db, notes_id)
+    assert options["seed"] == 1 and options["ollama_versions"] == ["unknown", "0.40.18"]
+
+
+def test_an_updated_ollama_resumes_and_is_recorded(db, data_dir, transcribed):
+    sid = transcribed()
+    notes_id = open_generation(db, data_dir, sid)
+    result, _ = ollama_run(db, data_dir, sid, version="0.41.0")
+    assert result.notes_id == notes_id and result.resumed_blocks == 1
+    assert stored_options(db, notes_id)["ollama_versions"] == ["0.40.18", "0.41.0"]
+
+
+def test_another_seed_starts_a_new_generation(db, data_dir, transcribed):
+    sid = transcribed()
+    notes_id = open_generation(db, data_dir, sid)
+    result, events = ollama_run(db, data_dir, sid, seed=2)
+    assert result.notes_id != notes_id
+    assert events[0] == ("discarded", {"notes_id": notes_id, "reason": "different options"})
+    assert stored_options(db, result.notes_id)["seed"] == 2
+
+
+def test_a_truncated_answer_is_in_the_database(db, data_dir, transcribed):
+    sid = transcribed()
+
+    def responder(request, index):
+        if request.user.startswith('[{"part"'):
+            return '{"summary": "' + "x" * 80_000
+        return echo_notes(request, index)
+
+    with pytest.raises(Truncated):
+        generate(db, data_dir, sid, responder)
+    row = repo.get_open_notes(db, sid)
+    cut = [c for c in repo.list_llm_calls(db, row["id"]) if c["status"] == "error"]
+    assert [c["stage"] for c in cut] == ["reduce"]
+    assert cut[0]["output_json"].startswith('{"summary": "xxx')
+    assert "asks again" not in row["error"]
 
 
 def test_a_session_whose_notes_are_being_generated_is_refused(db, data_dir, transcribed):
