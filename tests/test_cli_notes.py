@@ -3,6 +3,8 @@ column. Fake provider and fake engine: no network, no GPU."""
 
 import io
 import json
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from fakes import FakeLlm, echo_notes
@@ -42,6 +44,7 @@ def test_notes_on_a_transcribed_session(db, data_dir, transcribed):
     assert "Model check: qwen3.5:9b" in text
     assert "  map 1/2" in text and "  final reduce" in text and "    ok in " in text
     assert "Done (generation #1)" in text and "words to check by listening: 1" in text
+    assert "not written yet" not in text
     provider, model, key, kwargs = made[0]
     assert (provider, model, key) == ("ollama", "qwen3.5:9b", None)
     assert kwargs["ollama"].num_ctx == 32768 and not kwargs["ollama"].allow_cpu
@@ -171,6 +174,62 @@ def test_transcribe_with_notes_runs_the_notes_after_freeing_whisper(db, data_dir
     assert "Whisper's GPU memory is released; now the notes." in text
     # a 10-second recording has too little speech: the notes command says so
     assert code == 1 and "notes need at least 5" in text
+
+
+# --- anti-standby ---------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def awake(monkeypatch):
+    """`cli.main` with fake commands: `awake.log` says which ran, and whether the PC was kept
+    awake meanwhile."""
+    state = SimpleNamespace(on=False, log=[], accepted=True, error=None)
+
+    @contextmanager
+    def keep():
+        state.on = True
+        try:
+            yield state.accepted
+        finally:
+            state.on = False
+
+    def command(name):
+        def run(*args, **kwargs):
+            state.log.append((name, state.on))
+            if state.error:
+                raise state.error
+            return 0
+        return run
+
+    monkeypatch.setattr(cli, "keep_system_awake", keep, raising=False)
+    for name in ("cmd_notes", "cmd_transcribe", "cmd_sessions", "cmd_record"):
+        monkeypatch.setattr(cli, name, command(name))
+    return state
+
+
+@pytest.mark.parametrize("argv, name, kept", [
+    (["notes", "x"], "cmd_notes", True),
+    (["transcribe", "x", "--notes"], "cmd_transcribe", True),  # Whisper's part too
+    (["transcribe", "x"], "cmd_transcribe", False),
+    (["sessions"], "cmd_sessions", False),
+    (["record", "--title", "x"], "cmd_record", False),  # the capture process asks for itself
+])
+def test_the_pc_is_kept_awake_while_notes_are_written(awake, data_dir, argv, name, kept):
+    assert cli.main(["--data-dir", str(data_dir), *argv]) == 0
+    assert awake.log == [(name, kept)] and not awake.on
+
+
+def test_the_pc_may_sleep_again_after_an_error(awake, data_dir):
+    awake.error = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        cli.main(["--data-dir", str(data_dir), "notes", "x"])
+    assert awake.log == [("cmd_notes", True)] and not awake.on
+
+
+def test_a_refused_anti_standby_request_is_reported(awake, data_dir, capsys):
+    awake.accepted = False
+    assert cli.main(["--data-dir", str(data_dir), "notes", "x"]) == 0
+    assert "Warning: anti-standby request refused by Windows" in capsys.readouterr().out
 
 
 # --- exports of the notes -------------------------------------------------------------------------

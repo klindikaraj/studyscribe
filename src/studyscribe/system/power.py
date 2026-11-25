@@ -1,4 +1,4 @@
-"""Keep Windows from sleeping while a recording runs."""
+"""Keep Windows from sleeping while a recording or a notes generation runs."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def keep_system_awake(set_state: SetStateFn | None = None) -> Iterator[bool]:
     """Ask Windows not to sleep because of inactivity until the block exits.
 
     The request belongs to the calling thread, so use this in the thread that lives for the
-    whole recording. It is released on exit, errors included; if the process is killed,
+    whole job. It is released on exit, errors included; if the process is killed,
     Windows drops it together with the thread. It does not keep the display on and does not
     block a manual sleep. Yields whether Windows accepted the request.
     """

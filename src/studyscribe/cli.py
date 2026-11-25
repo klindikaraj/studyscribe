@@ -10,7 +10,7 @@ import sqlite3
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -47,6 +47,7 @@ from studyscribe.recovery import (
     recover_transcriptions,
 )
 from studyscribe.session import SessionSink, new_session
+from studyscribe.system.power import keep_system_awake
 from studyscribe.transcribe import export
 from studyscribe.transcribe.engine import Transcriber, TranscriberError
 from studyscribe.transcribe.language import describe
@@ -176,7 +177,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "config" and args.config_action in ("set-key", "delete-key"):
         return cmd_config(args, sys.stdout)
-    with closing(open_database(db_path(data_dir), on_backup=_backup_note)) as conn:
+    # Notes take minutes with nobody at the keyboard; `transcribe --notes` is covered whole, so
+    # the PC cannot sleep between the two parts. (`record` asks in its capture process.)
+    long_run = args.command == "notes" or (args.command == "transcribe" and args.notes)
+    with (closing(open_database(db_path(data_dir), on_backup=_backup_note)) as conn,
+          keep_system_awake() if long_run else nullcontext(True) as awake):
+        if not awake:
+            print("Warning: anti-standby request refused by Windows")
         if args.command == "config":
             if args.config_action == "set":
                 return cli_notes.config_set(conn, args, sys.stdout)

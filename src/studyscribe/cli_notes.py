@@ -388,8 +388,6 @@ def print_summary(notes_id: int, stats: dict[str, Any], result: Any, out: TextIO
     dropped = sum(r.get("invalid_refs", 0) for r in refs.values())
     print(f"  references dropped: {dropped}; words to check by listening: "
           f"{stats.get('uncertain_words', 0)}", file=out)
-    print("  The notes are stored in the database; the notes.md / notes.html export is not "
-          "written yet.", file=out)
 
 
 def print_notes_recovery(results: list[RecoveredNotes], out: TextIO) -> None:
