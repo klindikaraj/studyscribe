@@ -1468,5 +1468,5 @@ Postponed, known limits:
 - 10: prompt work. Code extraction in Italian is unstable and partly rebuilt from descriptions,
   and the reduces do not follow their targets. The prompt stays v5.1.
 
-Test data: `3h-copy-p` is kept until the A6 listening is confirmed; `it-copy-tn` was deleted;
+Test data: `3h-copy-p` was deleted after A6 passed (2026-11-25), and `it-copy-tn` too;
 `piece5` holds the backups, the logs and the measuring scripts.
