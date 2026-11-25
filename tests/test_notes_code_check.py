@@ -9,7 +9,7 @@ from studyscribe.notes.transcript import Line
     ("y_pred = model(X)", ["calcoliamo ipsilon pred passando la X al model"]),
     ("torch.nn.Linear(1, 1)", ["usiamo PyTorch.neuralNetwork.Linear con uno e uno"]),
     ("firstName[firstName.length - 1]", ["first name bracket first name dot length minus one"]),
-    ("var myName = \"Beau Carnes\"", ["so I can set my name to be Beau"]),
+    ("var myName = \"Beau Carnes\"", ["keyword var", "so I can set my name to be Beau"]),
     ("nn.MSELoss()", ["la funzione mean squared error loss"]),  # MSE: initials
     ("x += 1", ["x plus equals one"]),  # nothing checkable
     ("Object.freeze(MATH_CONSTANTS)", ["object dot freeze", "math constants"]),
@@ -48,6 +48,34 @@ def test_a_name_said_elsewhere_in_the_lecture_is_to_check_not_unsupported():
 def test_string_literals_and_keywords_are_not_checked():
     assert check_code('print("Zebra quokka")', ["stampiamo"]).level == "ok"
     assert check_code("return None if x else undefined", []).level == "ok"
+
+
+def test_a_two_letter_word_is_not_a_three_letter_name():
+    # "se" is 80% similar to "mse" (piece 5, it-copy)
+    result = check_code("nn.MSELoss()", ["se la loss scende"])
+    assert result.level == "check" and result.partial == ("MSELoss",)
+    assert check_code("MSE", ["se scende"], vocabulary(["se"])).level == "unsupported"
+    assert check_code("pred", ["ipsilon pre"]).level == "ok"  # three letters still count
+
+
+@pytest.mark.parametrize("code, cited, level, partial", [
+    ("const lookup = {}", "I'm going to create bar lookup", "check", ("const",)),
+    ("const total = 1", "var total equals one", "check", ("const",)),
+    ("var total = 1", "var total equals one", "ok", ()),
+    ("let total = 1", "Let total equals one", "ok", ()),
+    ("let total = 1", "let's say total equals one", "check", ("let",)),
+    ("let total = 1", "let\u2019s say total equals one", "check", ("let",)),
+    ("var total = 1", "the variable total is one", "check", ("var",)),
+    ("for (var i = 0; i < 5; i++) {}", "a for loop", "check", ("var",)),
+])
+def test_var_let_and_const_must_have_been_said(code, cited, level, partial):
+    result = check_code(code, [cited])
+    assert (result.level, result.partial, result.missing) == (level, partial, ())
+
+
+def test_a_declaration_said_elsewhere_in_the_lecture_is_still_to_check():
+    result = check_code("const total = 1", ["total is one"], vocabulary(["use const"]))
+    assert result.level == "check" and result.partial == ("const",)
 
 
 def test_known_blind_spot_close_invented_names_pass():

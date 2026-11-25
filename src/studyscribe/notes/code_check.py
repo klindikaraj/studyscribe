@@ -8,8 +8,10 @@ rebuilt from a description).
 
 Every name (string literals and language keywords left out) is split into its words: snake_case,
 camelCase, dots, digits. A word of 3+ letters is found when a word of the cited lines (±1 line)
-contains it, is at least 80% similar to it, or has it as initials of consecutive words ("mean
-squared error" -> `MSE`). Shorter words (`y`, `nn`, `lr`) are not checked. A name is found when
+contains it, is at least 80% similar to it (and has 3+ letters too), or has it as initials of
+consecutive words ("mean squared error" -> `MSE`). Shorter words (`y`, `nn`, `lr`) are not
+checked. `var`, `let` and `const` are the keywords a lecturer chooses between: the one used must be
+said in those same lines, or it counts as partly found. A name is found when
 all its checked words are found there; partly found when some are, or when its words are found
 elsewhere in the lecture (the same tests on the whole transcript, initials left out: often the
 name was said, but the item cites the wrong lines); missing when none is found anywhere. Levels:
@@ -18,7 +20,8 @@ name was said, but the item cites the wrong lines); missing when none is found a
 - `check`: some name only partly found ("to verify");
 - `unsupported`: some name with no word found ("name not in the transcript, to verify").
 
-Known blind spots: an invented name close to a spoken word passes (`inputi` for "input"); a
+Known blind spots: an invented name close to a spoken word passes (`inputi` for "input", `MSE` for
+"mese"); "let me" counts as a spoken `let`, "constant" does not count as a spoken `const`; a
 right name never said (an alias only shown on screen, `plt`) gets a warning, and so does an
 English name for something the lecturer says in another language ("ottimizzatore" for
 `optimizer`), which is the usual case in an Italian lecture.
@@ -51,6 +54,8 @@ lambda yield async await try catch finally except raise throw with pass global n
 is and or not true false null undefined none nan print console log len range int float str
 bool list dict set tuple
 """.split())
+DECLARATIONS = frozenset({"var", "let", "const"})
+LETS = re.compile(r"\blet['’]s\b", re.IGNORECASE)  # not a spoken `let`
 
 
 @dataclass(frozen=True)
@@ -75,9 +80,12 @@ def check_code(code: str, cited: Sequence[str],
     transcript (see `vocabulary`), for names said elsewhere."""
     lines = [[w.lower() for w in TRANSCRIPT_WORD.findall(text)] for text in cited]
     near = {w for line in lines for w in line}
+    declared = vocabulary(LETS.sub(" ", text) for text in cited) & DECLARATIONS
     partial: list[str] = []
     missing: list[str] = []
     for name in dict.fromkeys(IDENTIFIER.findall(STRING_LITERAL.sub(" ", code))):
+        if name in DECLARATIONS and name not in declared:
+            partial.append(name)
         if name.lower() in KEYWORDS:
             continue
         parts = [p.lower() for p in NAME_PARTS.findall(name.replace("_", " "))
@@ -124,7 +132,8 @@ def annotate_code(notes: Mapping[str, Any], code_keys: Sequence[str],
 
 
 def _found(part: str, words: Collection[str], lines: Sequence[Sequence[str]]) -> bool:
-    if any(part in word or SequenceMatcher(None, part, word).ratio() >= SIMILAR
+    if any(part in word or (len(word) >= MIN_PART
+                            and SequenceMatcher(None, part, word).ratio() >= SIMILAR)
            for word in words):
         return True
     size = len(part)
