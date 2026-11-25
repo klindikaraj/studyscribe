@@ -9,6 +9,9 @@ originals (`it`, `3h`). In the commands below, run PowerShell from the repositor
 
 ## A. Export: notes.html in the browser
 
+Result: A1-A5 passed on `it-copy` by the user on 2026-11-25 (exact seek, `#t=`, questions,
+appendix, banner without audio). A6 still to be done; A7 optional.
+
 Prepared by Claude on 2026-11-22: `it-copy` has two finished generations of notes (qwen3.5:9b,
 prompt v5.1) and `audio.flac`. Claude could check the page only in headless Edge over the
 DevTools protocol (no console or CSP errors, clicks seek, `#t=` seeks); what only a person can
@@ -88,11 +91,29 @@ appendix is a table. If your viewer shows the raw `<details>` instead, note whic
 
 ### A6. The 3 h lecture (after piece 5)
 
-`3h-copy` has no notes yet. When it has (piece 5), repeat A1 on session
-`20261030-134407-4ba5ed`, then **listen** at a timestamp near the end (e.g. 2:50:00): the sound
-must be the sentence of `transcript.md` at that time. Claude checked in headless Edge that
-seeking in the 161 MB FLAC (it has no seek table) takes 11-70 ms and lands on the second, but
-could not hear the result.
+Prepared on 2026-11-25 in **`3h-copy-p`** (a separate copy of `3h-copy`, with `audio.flac`): with
+the default settings the 3 h generation stops in the final reduce (piece 5), so these notes come
+from a run with `reduce_max_input` 10,000. The export and `check_notes_export.py` are OK (147 exact
+links). Open the page:
+`3h-copy-p/sessions/20261030-134407-4ba5ed/exports/notes.html`.
+
+1. Click each of these timestamps in the notes and **listen**: what you hear must be the sentence,
+   at most a second early (recognition errors kept as in `transcript.md`):
+
+   | Click | Where | You hear |
+   |---|---|---|
+   | 0:08:14 | Examples and code, `let ourName = 'free code camp'` | "there's a way called left [let]. So I can say let our name..." |
+   | 0:28:05 | Key concepts, String Concatenation (before the 5 min pause) | "example, we have the r string equals I come first..." |
+   | 0:36:15 | Examples and code, `myString += adjective` (after the pause at 0:29:33) | "equals, and then I can put some adjective..." |
+   | 1:26:29 | Examples and code, `if val < 10 \|\| val > 20` (22 s after the device switch at 1:26:07) | "which is just two pipes. So I'm gonna put Val..." |
+   | 1:57:19 | Examples and code, `const entreeValue = ...` | "use bracket notation. So the entree value, we're going to test object..." |
+   | 2:55:34 | Examples and code, `squaredIntegers` (last cited line) | "I want you to look at is the arrow functions..." |
+
+2. The notes have no link after 2:55:34: add `#t=10623` to the address and reload. The player
+   stands at 2:57:03, **paused**. Press play: "that are more than zero, and also integers. So
+   there'll be 442 and six". The transcript ends at 2:57:29 ("...So we're going to").
+3. The yellow warning names blocks 4, 9 and 11 (S308-S327, S811-S825, S1016-S1051): its links must
+   land at the start of those lines.
 
 ### A7. Safety (optional)
 
