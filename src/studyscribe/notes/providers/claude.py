@@ -70,10 +70,10 @@ class ClaudeProvider:
             category = getattr(details, "category", None) or "unspecified"
             raise Refused(f"Claude declined to answer (refusal, {category}).", reason=category,
                           usage=usage, remedy="Try the other model or provider.")
+        text = "".join(block.text for block in message.content if block.type == "text")
         if message.stop_reason in ("max_tokens", "model_context_window_exceeded"):
             raise Truncated(f"The answer was cut at {request.max_output_tokens} output tokens.",
-                            usage=usage, remedy="The notes pipeline asks again with more room.")
-        text = "".join(block.text for block in message.content if block.type == "text")
+                            usage=usage, text=text or None)
         return LlmResponse(text=text, usage=usage, model_version=message.model,
                            request_id=request_id, duration_s=duration)
 

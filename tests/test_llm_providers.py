@@ -158,6 +158,7 @@ def test_gemini_truncated_answer_keeps_its_usage():
     with pytest.raises(Truncated) as info:
         provider.generate(REQUEST)
     assert info.value.usage.input_tokens == 100
+    assert info.value.text == '{"a": ' and info.value.remedy == ""
 
 
 @pytest.mark.parametrize("finish", ["RECITATION", "SAFETY"])
@@ -318,6 +319,7 @@ def test_claude_truncated():
     with pytest.raises(Truncated) as info:
         provider.generate(REQUEST)
     assert info.value.usage is not None
+    assert info.value.text == '{"a"' and info.value.remedy == ""
 
 
 def test_claude_sdk_errors_become_llm_errors():

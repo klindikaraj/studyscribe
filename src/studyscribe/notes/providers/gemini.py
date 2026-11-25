@@ -87,7 +87,7 @@ class GeminiProvider:
         finish = _enum_name(candidates[0].finish_reason) if candidates[0].finish_reason else "STOP"
         if finish in ("MAX_TOKENS", "CONTINUATION"):
             raise Truncated(f"The answer was cut at {request.max_output_tokens} output tokens.",
-                            usage=usage, remedy="The notes pipeline asks again with more room.")
+                            usage=usage, text=response.text)
         if finish in _BLOCK_REASONS:
             raise Refused(f"Gemini stopped the answer ({finish}).", reason=finish, usage=usage,
                           remedy=_refusal_remedy(finish))

@@ -438,13 +438,14 @@ class OllamaProvider:
                           prefill_s=_seconds(final.get("prompt_eval_duration")),
                           generate_s=_seconds(final.get("eval_duration")))
         if final.get("done_reason") == "length":
-            still_thinking = bool(stream.thinking) and not "".join(stream.content).strip()
+            text = "".join(stream.content)
+            still_thinking = bool(stream.thinking) and not text.strip()
             where = (f", while still thinking ({len(stream.thinking):,} thinking tokens)"
                      if still_thinking else "")
             raise Truncated(f"The answer was cut at {request.max_output_tokens:,} output "
-                            f"tokens{where}.", usage=usage,
+                            f"tokens{where}.", usage=usage, text=text or None,
                             remedy="Thinking needs a larger output cap, or use --effort none."
-                            if still_thinking else "The notes pipeline asks again with more room.")
+                            if still_thinking else "")
         self._check_not_cut(usage, len(request.system) + len(request.user))
         text = "".join(stream.content)
         if not text.strip():

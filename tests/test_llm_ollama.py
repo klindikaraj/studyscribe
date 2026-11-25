@@ -299,6 +299,8 @@ def test_output_cut_at_num_predict_is_truncated(fake):
     with pytest.raises(Truncated) as info:
         provider_for(fake).generate(REQUEST)
     assert info.value.usage.output_tokens == 1000
+    assert info.value.text == '{"topic": "gra'
+    assert info.value.remedy == ""  # only the pipeline knows whether it asks again
 
 
 def test_empty_answer_is_an_error(fake):

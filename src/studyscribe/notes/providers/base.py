@@ -160,7 +160,11 @@ class Refused(LlmError):
 
 
 class Truncated(LlmError):
-    """The output hit max_tokens: the JSON is incomplete."""
+    """The output hit max_tokens: the JSON is incomplete. `text`: the answer so far."""
+
+    def __init__(self, message: str, *, text: str | None = None, **kwargs) -> None:
+        super().__init__(message, **kwargs)
+        self.text = text
 
 
 class ContextTooLong(LlmError):
