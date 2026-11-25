@@ -1533,3 +1533,8 @@ Not verified: the factor holds for qwen3.5:9b with thinking off on these two lec
 `num_predict` does not change the tokens generated (it-copy must repeat version 3's final reduce);
 the estimate shown before a run may say 2 partial reduces instead of 3 (it knows the budget, not
 the speech limit).
+
+Standby: "15 minutes on AC" (piece 5) is the timeout of this PC, but `powercfg /a` says S3 is
+disabled by the power plan (ALLOWSTANDBY is 0 on AC) and the System log (from 2026-08-14) has no
+sleep event: on AC the PC does not sleep now, whatever the timeout. Testing the effect of fix 4
+needs that setting on for the test; `powercfg /requests` (administrator) shows only the request.
