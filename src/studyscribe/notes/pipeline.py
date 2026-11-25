@@ -349,13 +349,11 @@ class _Run:
                 speech = sum(part.speech_ms for part in inputs)
                 self.progress(f"partial reduce {number}")
                 targets = self.template.partial_targets(speech, self.total_speech_ms, slack)
-                merged.append(self._reduce_request("partial", number, inputs, targets,
-                                                   speech)[0])
+                merged.append(self._partial(number, inputs, targets, speech))
                 self.reduce_stats["partial"] += 1
             parts = merged
         self.progress("final reduce")
-        return self._reduce_request("reduce", 1, parts, final_targets,
-                                    self.total_speech_ms)[1]
+        return self._reduce_request("reduce", 1, parts, final_targets)[0]
 
     def _fit_final_targets(self, targets: dict[str, int], parts: Sequence[_Part],
                            cap: int) -> dict[str, int]:
@@ -392,8 +390,7 @@ class _Run:
             self.progress(f"partial reduce {number} (shortening one part)")
             targets = self.template.partial_targets(part.speech_ms, self.total_speech_ms,
                                                     slack=1.0)
-            short = self._reduce_request("partial", number, [part], targets,
-                                         part.speech_ms)[0]
+            short = self._partial(number, [part], targets, part.speech_ms)
             if short.tokens >= part.tokens:
                 raise NotesError("The partial notes do not get shorter when merged or "
                                  "shortened: they cannot be reduced into one request.",
@@ -402,17 +399,20 @@ class _Run:
             shortened.append(short)
         return shortened, number
 
+    def _partial(self, number: int, inputs: Sequence[_Part], targets: Mapping[str, int],
+                 speech_ms: int) -> _Part:
+        notes, raw = self._reduce_request("partial", number, inputs, targets)
+        return self._part(PartNotes(inputs[0].notes.start_ms, inputs[-1].notes.end_ms,
+                                    notes.model_dump()), raw, speech_ms)
+
     def _reduce_request(self, stage: Stage, number: int, inputs: Sequence[_Part],
-                        targets: Mapping[str, int], speech_ms: int) -> tuple[_Part, BaseModel]:
+                        targets: Mapping[str, int]) -> tuple[BaseModel, str]:
         final = stage == "reduce"
         prompt = reduce_prompt(self.template, [part.notes for part in inputs], final=final,
                                targets=targets, title=self.lecture.title,
                                course=self.lecture.course, language=self.lecture.language)
         allowed = refs_in(part.notes.notes for part in inputs)
-        notes, raw = self._ask(stage, number, prompt, allowed, count_input=True)
-        part = self._part(PartNotes(inputs[0].notes.start_ms, inputs[-1].notes.end_ms,
-                                    notes.model_dump()), raw, speech_ms)
-        return part, notes
+        return self._ask(stage, number, prompt, allowed, count_input=True)
 
     # --- one request -----------------------------------------------------------------------------
 
