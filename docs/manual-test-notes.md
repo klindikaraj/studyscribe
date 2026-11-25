@@ -117,8 +117,17 @@ links). Open the page:
 2. The notes have no link after 2:55:34: add `#t=10623` to the address and reload. The player
    stands at 2:57:03, **paused**. Press play: "that are more than zero, and also integers. So
    there'll be 442 and six". The transcript ends at 2:57:29 ("...So we're going to").
-3. The yellow warning names blocks 4, 9 and 11 (S308-S327, S811-S825, S1016-S1051): its links must
-   land at the start of those lines.
+3. The links of the yellow warning, on the page generated again by piece 5b (version 2 in
+   **`3h-copy`**: `3h-copy/sessions/20261030-134407-4ba5ed/exports/notes.html`). Click each one and
+   **listen**: you hear the first uncovered line, at most a second early.
+
+   | Link | First line | You hear |
+   |---|---|---|
+   | 0:42:35 to 0:45:01 (lines S308 to S327) | S308 | "types of words. You pass in a noun, an adjective, a verb and an adverb..." |
+   | 1:45:27 to 1:47:38 (lines S811 to S825) | S811 | "we're going to set the answer to the answer." then "For case one..." |
+   | 2:10:56 to 2:15:32 (lines S1016 to S1051) | S1016 | "to delete collection. And then we have to use bracket notation ID and then prop..." |
+
+   The header says version 2 of 2 and there are no other links in the box.
 
 ### A7. Safety (optional)
 
